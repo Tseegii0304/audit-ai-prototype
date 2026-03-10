@@ -264,7 +264,11 @@ if page.startswith("1"):
                 with st.expander(f"📅 {yr} — {len(dfy):,} гүйлгээ",expanded=True):
                     with st.spinner(f"Part1 {yr}..."): p1_buf,p1_mo,p1_acct,p1_rm,n_risk=generate_part1(dfy,yr)
                     c1,c2,c3=st.columns(3); c1.metric("Гүйлгээ",f"{len(dfy):,}"); c2.metric("Эрсдэлийн хос",f"{len(p1_rm):,}"); c3.metric("Эрсдэлтэй",f"{n_risk:,}")
-                    st.download_button(f"📥 prototype_ledger_{yr}.csv",dfy[cols_out].to_csv(index=False).encode('utf-8'),f"prototype_ledger_{yr}.csv","text/csv",key=f"dled{yr}")
+                    import gzip as gz2
+                    csv_bytes = dfy[cols_out].to_csv(index=False).encode('utf-8')
+                    gz_bytes = gz2.compress(csv_bytes)
+                    st.caption(f"CSV: {len(csv_bytes)/1e6:.0f}MB → GZ: {len(gz_bytes)/1e6:.0f}MB ({len(gz_bytes)/len(csv_bytes)*100:.0f}%)")
+                    st.download_button(f"📥 prototype_ledger_{yr}.csv.gz (шахсан)",gz_bytes,f"prototype_ledger_{yr}.csv.gz","application/gzip",key=f"dled{yr}")
                     st.download_button(f"📥 prototype_part1_{yr}.xlsx",p1_buf.getvalue(),f"prototype_part1_{yr}.xlsx","application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",key=f"dp1{yr}")
 
 # ═══════════════════════════════════════
