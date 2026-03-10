@@ -1,0 +1,26 @@
+[server]
+maxUploadSize = 500
+maxMessageSize = 500
+
+[browser]
+gatherUsageStats = false
+
+[theme]
+primaryColor = "#1565c0"
+```
+4. **Commit changes** дарна
+
+## Алхам 4: Streamlit Cloud Deploy
+
+1. [share.streamlit.io](https://share.streamlit.io) руу орно
+2. **Continue with GitHub** дарж нэвтэрнэ
+3. **New app** дарна
+4. Тохируулна:
+   - **Repository:** `audit-ai-prototype`
+   - **Branch:** `main`
+   - **Main file path:** `audit_app.py`
+5. **Deploy!** дарна
+
+2-3 минут хүлээхэд таны апп бэлэн болно:
+```
+https://таны-нэр-audit-ai-prototype.streamlit.app
