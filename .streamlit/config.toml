@@ -1,6 +1,6 @@
 [server]
-maxUploadSize = 500
-maxMessageSize = 500
+maxUploadSize = 1000
+maxMessageSize = 1000
 
 [browser]
 gatherUsageStats = false
@@ -8,19 +8,16 @@ gatherUsageStats = false
 [theme]
 primaryColor = "#1565c0"
 ```
-4. **Commit changes** дарна
 
-## Алхам 4: Streamlit Cloud Deploy
+**Юу өөрчлөгдсөн:**
 
-1. [share.streamlit.io](https://share.streamlit.io) руу орно
-2. **Continue with GitHub** дарж нэвтэрнэ
-3. **New app** дарна
-4. Тохируулна:
-   - **Repository:** `audit-ai-prototype`
-   - **Branch:** `main`
-   - **Main file path:** `audit_app.py`
-5. **Deploy!** дарна
+| Өмнө | Одоо |
+|---|---|
+| `prototype_ledger_2024.csv` (336MB) ❌ | `prototype_ledger_2024.csv.gz` (~50MB) ✅ |
+| `prototype_ledger_2025.csv` (434MB) ❌ | `prototype_ledger_2025.csv.gz` (~60MB) ✅ |
+| Upload хязгаар 200MB | **1000MB** |
 
-2-3 минут хүлээхэд таны апп бэлэн болно:
+Өгөгдөл бэлтгэх дээр Ledger татахад одоо **шахсан хэмжээ** харуулна:
 ```
-https://таны-нэр-audit-ai-prototype.streamlit.app
+CSV: 336MB → GZ: 48MB (14%)
+📥 prototype_ledger_2024.csv.gz (шахсан)
