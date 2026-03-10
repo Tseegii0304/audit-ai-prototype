@@ -528,4 +528,3 @@ elif page.startswith("2"):
 
     elif not tb_files or not led_files:
         st.info("👆 TB + Ledger upload хийнэ. Part1 нэмбэл эрсдэлийн матриц + сарын trend нэмэгдэнэ.")
-
