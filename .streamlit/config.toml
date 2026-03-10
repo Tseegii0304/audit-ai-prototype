@@ -7,17 +7,3 @@ gatherUsageStats = false
 
 [theme]
 primaryColor = "#1565c0"
-```
-
-**Юу өөрчлөгдсөн:**
-
-| Өмнө | Одоо |
-|---|---|
-| `prototype_ledger_2024.csv` (336MB) ❌ | `prototype_ledger_2024.csv.gz` (~50MB) ✅ |
-| `prototype_ledger_2025.csv` (434MB) ❌ | `prototype_ledger_2025.csv.gz` (~60MB) ✅ |
-| Upload хязгаар 200MB | **1000MB** |
-
-Өгөгдөл бэлтгэх дээр Ledger татахад одоо **шахсан хэмжээ** харуулна:
-```
-CSV: 336MB → GZ: 48MB (14%)
-📥 prototype_ledger_2024.csv.gz (шахсан)
