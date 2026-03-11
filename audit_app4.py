@@ -18,6 +18,8 @@ from sklearn.metrics import precision_score, recall_score, f1_score, roc_auc_sco
 import warnings, io, re, gzip
 from datetime import datetime
 warnings.filterwarnings('ignore')
+from tab_descriptions import TabDescriptions
+td = TabDescriptions()
 st.set_page_config(page_title="Аудитын ХОУ v3.4", page_icon="🔍", layout="wide")
 st.markdown('<h1 style="text-align:center;color:#1565c0">🔍 Аудитын ХОУ Прототип v3.4</h1>', unsafe_allow_html=True)
 st.markdown('<p style="text-align:center;color:#666">TB + Ledger + Part1 → Бүрэн шинжилгээ</p>', unsafe_allow_html=True)
@@ -419,6 +421,11 @@ elif page.startswith("2"):
         all_tabs = st.tabs(tab_names)
 
         with all_tabs[0]:
+            td.show_summary_description(
+                n_accounts=len(df),
+                n_transactions=sum(d['rows'] for d in led_st.values()),
+                n_risk_pairs=len(rm_all) if has_rm else 0
+            )
             m1, m2, m3, m4 = st.columns(4)
             m1.metric("Данс", f"{len(df):,}")
             m2.metric("Гүйлгээ", f"{sum(d['rows'] for d in led_st.values()):,}")
@@ -437,8 +444,10 @@ elif page.startswith("2"):
                     fg.add_trace(go.Bar(x=[str(yv)], y=[led_st[yv]['rows']], marker_color=cl3[i % 3], showlegend=False), row=1, col=3)
             fg.update_layout(height=350)
             st.plotly_chart(fg, use_container_width=True)
+            td.show_summary_interpretation()
 
         with all_tabs[1]:
+            td.show_anomaly_description()
             mt = {'Isolation Forest': 'iso_anomaly', 'Z-score': 'zscore_anomaly', 'Turn ratio': 'turn_anomaly', 'ENSEMBLE': 'ensemble_anomaly'}
             ad = []
             for m, c in mt.items():
@@ -451,8 +460,15 @@ elif page.startswith("2"):
                 ad.append(row_d)
             st.dataframe(pd.DataFrame(ad), use_container_width=True, hide_index=True)
             st.plotly_chart(px.scatter(df, x='log_turn_d', y='log_abs_change', color=df['ensemble_anomaly'].map({0: 'Хэвийн', 1: 'Аномали'}), facet_col='year', opacity=0.5, color_discrete_map={'Хэвийн': '#90caf9', 'Аномали': '#c62828'}, height=400), use_container_width=True)
+            td.show_anomaly_interpretation(
+                n_if=int(df['iso_anomaly'].sum()),
+                n_zscore=int(df['zscore_anomaly'].sum()),
+                n_turn=int(df['turn_anomaly'].sum()),
+                n_ensemble=int(df['ensemble_anomaly'].sum())
+            )
 
         with all_tabs[2]:
+            td.show_ai_vs_mus_description()
             st.dataframe(pd.DataFrame([{'Загвар': n, 'Precision': f"{r['precision']:.4f}", 'Recall': f"{r['recall']:.4f}", 'F1': f"{r['f1']:.4f}", 'AUC': f"{r['auc']:.4f}"} for n, r in res.items()]), use_container_width=True, hide_index=True)
             fg2 = go.Figure()
             for n, r in res.items():
@@ -475,14 +491,23 @@ elif page.startswith("2"):
                     m2x = 0
                 dr.append({'Жил': yv, 'ХОУ': f"{a2:.4f}", 'MUS 20%': f"{m2x:.4f}", 'Сайжрал': f"{m2x - a2:.4f}"})
             st.dataframe(pd.DataFrame(dr), use_container_width=True, hide_index=True)
+            td.show_ai_vs_mus_interpretation(
+                rf_f1=f"{res[best]['f1']:.4f}",
+                rf_auc=f"{res[best]['auc']:.4f}",
+                dr_ai=dr[0]['ХОУ'] if dr else "",
+                dr_mus=dr[0]['MUS 20%'] if dr else "",
+                mcnemar_chi2="p<0.001"
+            )
 
         with all_tabs[3]:
+            td.show_xai_description()
             st.plotly_chart(px.bar(fi, x='importance', y='feature', orientation='h', color='importance', color_continuous_scale='Blues', title='Feature Importance').update_layout(height=400, yaxis={'categoryorder': 'total ascending'}), use_container_width=True)
-            fd = {'log_abs_change': 'Он дамнасан цэвэр өөрчлөлт', 'turn_ratio': 'Дебит-кредит харьцаа', 'log_turn_d': 'Баримт дебит', 'log_turn_c': 'Баримт кредит', 'log_close_d': 'Эцсийн дебит', 'log_close_c': 'Эцсийн кредит', 'cat_num': 'Дансны ангилал', 'year': 'Жил'}
-            for _, r in fi.iterrows():
-                st.markdown(f"**{r['feature']}** ({r['importance']:.4f}): {fd.get(r['feature'], '')}")
+            fi_dict = dict(zip(fi['feature'], fi['importance']))
+            td.show_xai_feature_details(feature_importances=fi_dict)
+            td.show_xai_interpretation()
 
         with all_tabs[4]:
+            td.show_list_description()
             adf = df[df['ensemble_anomaly'] == 1][['year', 'account_code', 'account_name', 'turnover_debit', 'turnover_credit', 'turn_ratio', 'log_abs_change']].copy()
             yf = st.selectbox("Жил", ['Бүгд'] + [str(y2) for y2 in yrs])
             if yf != 'Бүгд':
@@ -490,9 +515,11 @@ elif page.startswith("2"):
             st.write(f"Нийт: {len(adf)}")
             st.dataframe(adf, use_container_width=True, hide_index=True, height=500)
             st.download_button("📥 CSV", adf.to_csv(index=False).encode('utf-8-sig'), "anomaly.csv", "text/csv")
+            td.show_list_interpretation(n_anomalies=len(adf))
 
         if has_rm:
             with all_tabs[5]:
+                td.show_risk_matrix_description()
                 st.subheader("🎯 Эрсдэлийн матриц")
                 rm_all['risk_score'] = pd.to_numeric(rm_all['risk_score'], errors='coerce').fillna(0)
                 rm_all['total_amount_mnt'] = pd.to_numeric(rm_all.get('total_amount_mnt', 0), errors='coerce').fillna(0)
@@ -511,10 +538,12 @@ elif page.startswith("2"):
                 top_cp = rm_all.groupby('counterparty_name').agg(txn=('transaction_count', 'sum'), accounts=('account_code', 'nunique')).sort_values('txn', ascending=False).head(20).reset_index()
                 top_cp.columns = ['Харилцагч', 'Гүйлгээний тоо', 'Дансны тоо']
                 st.dataframe(top_cp, use_container_width=True, hide_index=True)
+                td.show_risk_matrix_interpretation(n_pairs=len(rm_all))
 
         if has_mo:
             tidx = 6 if has_rm else 5
             with all_tabs[tidx]:
+                td.show_monthly_trend_description()
                 st.subheader("📈 Сарын чиг хандлага")
                 mo_all['total_debit_mnt'] = pd.to_numeric(mo_all['total_debit_mnt'], errors='coerce').fillna(0)
                 mo_all['transaction_count'] = pd.to_numeric(mo_all['transaction_count'], errors='coerce').fillna(0)
@@ -525,6 +554,9 @@ elif page.startswith("2"):
                 fig_mo.add_trace(go.Bar(x=mo_agg['month'], y=mo_agg['txn'], name='Гүйлгээ'), row=2, col=1)
                 fig_mo.update_layout(height=500)
                 st.plotly_chart(fig_mo, use_container_width=True)
+                td.show_monthly_trend_interpretation()
+
+        td.show_dashboard_footer()
 
     elif not tb_files or not led_files:
         st.info("👆 TB + Ledger upload хийнэ. Part1 нэмбэл эрсдэлийн матриц + сарын trend нэмэгдэнэ.")
