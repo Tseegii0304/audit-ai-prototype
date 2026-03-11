@@ -90,74 +90,137 @@ def process_raw_tb(file_obj):
     buf.seek(0)
     return buf, tb_sum
 
+COL_PATTERNS = {
+    'account_code': ['дансны код','данс код','account code','account no','account number','acc code','код'],
+    'account_name': ['дансны нэр','данс нэр','account name','acc name','нэр'],
+    'transaction_date': ['огноо','date','transaction date','txn date'],
+    'debit_mnt': ['дебит','debit','dt','дт','debit amount'],
+    'credit_mnt': ['кредит','credit','ct','кт','credit amount'],
+    'balance_mnt': ['үлдэгдэл','balance','bal','ending balance'],
+    'counterparty_name': ['харилцагч','counterparty','partner','vendor','customer'],
+    'transaction_description': ['тайлбар','гүйлгээний утга','утга','description','memo','narration'],
+    'journal_no': ['журнал','journal','journal no'],
+    'document_no': ['баримт','document','doc no'],
+}
+def _match_col(h, field):
+    h2 = str(h).lower().strip()
+    return any(p in h2 for p in COL_PATTERNS.get(field, []))
+def _auto_map(headers):
+    m, used = {}, set()
+    for f in ['account_code','debit_mnt','credit_mnt','transaction_date','account_name','counterparty_name','transaction_description','balance_mnt','journal_no','document_no']:
+        for i, h in enumerate(headers):
+            if i in used: continue
+            if _match_col(h, f): m[f]=i; used.add(i); break
+    return m
+
 def process_edt(file_obj, report_year):
+    """Ямар ч форматын ЕДТ/Ерөнхий журнал уншина."""
     import openpyxl
     EDT_COLUMNS = ['report_year','account_code','account_name','transaction_no','transaction_date',
                    'journal_no','document_no','counterparty_name','counterparty_id',
                    'transaction_description','debit_mnt','credit_mnt','balance_mnt','month']
+
+    # 1-р оролдлого: Стандарт ЕДТ формат (Данс: [...])
+    file_obj.seek(0)
     wb = openpyxl.load_workbook(file_obj, read_only=True)
     ws = wb[wb.sheetnames[0]]
-    rows_out = []
-    cur_code = None
-    cur_name = None
-
-    # First pass: detect column layout by scanning headers
-    debit_col = 9   # default
-    credit_col = 11 # default
-    balance_col = 13 # default
-    desc_col = 7    # default
-    cp_name_col = 3 # default
-    cp_id_col = 4   # default
-    jnl_col = 5     # default
-    doc_col = 6     # default
-
+    rows_out, cur_code, cur_name = [], None, None
     for row in ws.iter_rows(values_only=True):
         c0 = row[0]
-        if c0 is None:
-            continue
+        if c0 is None: continue
         s = str(c0).strip()
         if s.startswith('Данс:'):
             code, name = parse_account(s)
-            if code:
-                cur_code = code
-                cur_name = name
+            if code: cur_code, cur_name = code, name
             continue
-        skip_prefixes = ['Компани:', 'ЕРӨНХИЙ', 'Тайлант', 'Үүсгэсэн', 'Журнал:', '№', 'Эцсийн', 'Дт -', 'Нийт', 'Эхний']
-        if any(s.startswith(x) for x in skip_prefixes) or s in ('Валютаар', 'Төгрөгөөр', ''):
-            continue
-        try:
-            tx_no = int(float(c0))
-        except Exception:
-            continue
-        if cur_code is None:
-            continue
-        td = row[1] if len(row) > 1 else ''
-        if isinstance(td, datetime):
-            tx_date = td.strftime('%Y-%m-%d')
-        elif td:
-            tx_date = str(td).strip()
-        else:
-            tx_date = ''
-        rows_out.append({
-            'report_year': str(report_year),
-            'account_code': cur_code,
-            'account_name': cur_name,
-            'transaction_no': str(tx_no),
-            'transaction_date': tx_date,
-            'journal_no': str(row[jnl_col]).strip() if len(row) > jnl_col and row[jnl_col] else '',
-            'document_no': str(row[doc_col]).strip() if len(row) > doc_col and row[doc_col] else '',
-            'counterparty_name': str(row[cp_name_col]).strip() if len(row) > cp_name_col and row[cp_name_col] else '',
-            'counterparty_id': str(row[cp_id_col]).strip() if len(row) > cp_id_col and row[cp_id_col] else '',
-            'transaction_description': str(row[desc_col]).strip() if len(row) > desc_col and row[desc_col] else '',
-            'debit_mnt': safe_float(row[debit_col]) if len(row) > debit_col else 0.0,
-            'credit_mnt': safe_float(row[credit_col]) if len(row) > credit_col else 0.0,
-            'balance_mnt': safe_float(row[balance_col]) if len(row) > balance_col else 0.0,
-            'month': tx_date[:7] if len(tx_date) >= 7 else '',
-        })
+        if any(s.startswith(x) for x in ['Компани:','ЕРӨНХИЙ','Тайлант','Үүсгэсэн','Журнал:','№','Эцсийн','Дт -','Нийт','Эхний','Нээгээд']) or s in ('Валютаар','Төгрөгөөр',''): continue
+        try: tx_no = int(float(c0))
+        except: continue
+        if cur_code is None: continue
+        td = row[1] if len(row)>1 else ''
+        tx_date = td.strftime('%Y-%m-%d') if isinstance(td, datetime) else (str(td).strip() if td else '')
+        rows_out.append({'report_year':str(report_year),'account_code':cur_code,'account_name':cur_name,
+            'transaction_no':str(tx_no),'transaction_date':tx_date,
+            'journal_no':str(row[5]).strip() if len(row)>5 and row[5] else '',
+            'document_no':str(row[6]).strip() if len(row)>6 and row[6] else '',
+            'counterparty_name':str(row[3]).strip() if len(row)>3 and row[3] else '',
+            'counterparty_id':str(row[4]).strip() if len(row)>4 and row[4] else '',
+            'transaction_description':str(row[7]).strip() if len(row)>7 and row[7] else '',
+            'debit_mnt':safe_float(row[9]) if len(row)>9 else 0.0,
+            'credit_mnt':safe_float(row[11]) if len(row)>11 else 0.0,
+            'balance_mnt':safe_float(row[13]) if len(row)>13 else 0.0,
+            'month':tx_date[:7] if len(tx_date)>=7 else ''})
     wb.close()
-    if not rows_out:
-        return pd.DataFrame(columns=EDT_COLUMNS), 0
-    return pd.DataFrame(rows_out), len(rows_out)
+    if rows_out:
+        return pd.DataFrame(rows_out), len(rows_out)
+
+    # 2-р оролдлого: Хүснэгт формат (баганы гарчигтай)
+    file_obj.seek(0)
+    try:
+        raw = file_obj.read(); file_obj.seek(0)
+        wb2 = openpyxl.load_workbook(io.BytesIO(raw), read_only=True)
+        ws2 = wb2[wb2.sheetnames[0]]
+        allr = []
+        for i, row in enumerate(ws2.iter_rows(values_only=True)):
+            allr.append(list(row))
+            if i >= 500: break
+        wb2.close()
+        # Гарчиг олох
+        best_i, best_s = 0, 0
+        for i, row in enumerate(allr[:20]):
+            sc = sum(1 for cell in row if cell and any(any(p in str(cell).lower() for p in pats) for pats in COL_PATTERNS.values()))
+            if sc > best_s: best_s=sc; best_i=i
+        if best_s >= 2:
+            headers = [str(c).strip() if c else f'col_{j}' for j, c in enumerate(allr[best_i])]
+            cm = _auto_map(headers)
+            if 'debit_mnt' in cm or 'credit_mnt' in cm:
+                def _gv(row, cm, f, d=''):
+                    idx=cm.get(f)
+                    if idx is None or idx>=len(row) or row[idx] is None: return d
+                    return str(row[idx]).strip()
+                rows2 = []
+                for row in allr[best_i+1:]:
+                    if all(c is None for c in row): continue
+                    ac = _gv(row, cm, 'account_code')
+                    if not ac or ac in ('None','nan',''): continue
+                    db = safe_float(row[cm['debit_mnt']]) if 'debit_mnt' in cm and cm['debit_mnt']<len(row) else 0.0
+                    cr = safe_float(row[cm['credit_mnt']]) if 'credit_mnt' in cm and cm['credit_mnt']<len(row) else 0.0
+                    if db==0 and cr==0: continue
+                    tdi = cm.get('transaction_date')
+                    tx_date = ''
+                    if tdi is not None and tdi<len(row):
+                        td2 = row[tdi]
+                        tx_date = td2.strftime('%Y-%m-%d') if isinstance(td2, datetime) else (str(td2).strip()[:10] if td2 else '')
+                    rows2.append({'report_year':str(report_year),'account_code':ac,'account_name':_gv(row,cm,'account_name'),
+                        'transaction_no':str(len(rows2)+1),'transaction_date':tx_date,
+                        'journal_no':_gv(row,cm,'journal_no'),'document_no':_gv(row,cm,'document_no'),
+                        'counterparty_name':_gv(row,cm,'counterparty_name'),'counterparty_id':'',
+                        'transaction_description':_gv(row,cm,'transaction_description'),
+                        'debit_mnt':db,'credit_mnt':cr,
+                        'balance_mnt':safe_float(row[cm['balance_mnt']]) if 'balance_mnt' in cm and cm['balance_mnt']<len(row) else 0.0,
+                        'month':tx_date[:7] if len(tx_date)>=7 else ''})
+                if rows2: return pd.DataFrame(rows2), len(rows2)
+    except: pass
+
+    # 3-р оролдлого: pandas-аар шууд
+    file_obj.seek(0)
+    try:
+        df = pd.read_excel(file_obj)
+        cm = _auto_map(df.columns.tolist())
+        if 'debit_mnt' in cm or 'credit_mnt' in cm:
+            rn = {df.columns[idx]: field for field, idx in cm.items()}
+            df = df.rename(columns=rn)
+            df['report_year'] = str(report_year)
+            for c in EDT_COLUMNS:
+                if c not in df.columns: df[c] = '' if c in ('account_code','account_name','transaction_description','counterparty_name') else 0
+            df['debit_mnt'] = pd.to_numeric(df.get('debit_mnt',0), errors='coerce').fillna(0)
+            df['credit_mnt'] = pd.to_numeric(df.get('credit_mnt',0), errors='coerce').fillna(0)
+            df = df[(df['debit_mnt']!=0)|(df['credit_mnt']!=0)]
+            df['month'] = df['transaction_date'].astype(str).str[:7] if 'transaction_date' in df.columns else ''
+            if len(df) > 0: return df[EDT_COLUMNS], len(df)
+    except: pass
+
+    return pd.DataFrame(columns=EDT_COLUMNS), 0
 
 def generate_part1(df_led, year):
     df = df_led.copy()
@@ -716,11 +779,24 @@ elif page.startswith("2"):
         elif not tb_files and not led_files and not need_convert:
             st.info("👆 TB + Ledger файлуудаа оруулна уу")
 
+    st.markdown("""
+    <div style="background:#F5F5F5; padding:12px; border-radius:8px; margin-bottom:10px;">
+    <b>⚙️ Шинжилгээний тохиргоо</b>
+    </div>
+    """, unsafe_allow_html=True)
     c1s, c2s = st.columns(2)
     with c1s:
-        cont = st.slider("IF contamination", 0.05, 0.20, 0.10, 0.01)
+        cont = st.slider("🎯 IF contamination — Тусгаарлалтын ойн хэвийн бус хувь", 0.05, 0.20, 0.10, 0.01,
+            help="Isolation Forest (Тусгаарлалтын ой) алгоритм нийт дансны хэдэн хувийг хэвийн бус гэж үзэх. "
+                 "0.05 (5%) = зөвхөн хамгийн сэжигтэй 5%. "
+                 "0.10 (10%) = 10% илрүүлнэ (анхдагч). "
+                 "0.20 (20%) = илүү өргөн хүрээтэй шалгана.")
     with c2s:
-        nest = st.slider("RF n_estimators", 50, 500, 200, 50)
+        nest = st.slider("🌲 RF n_estimators — Санамсаргүй ойн модны тоо", 50, 500, 200, 50,
+            help="Random Forest (Санамсаргүй ой) загварын модны тоо. "
+                 "50 = хурдан, бага нарийвчлал. "
+                 "200 = тэнцвэртэй (анхдагч). "
+                 "500 = удаан, өндөр нарийвчлал.")
 
     if st.button("🚀 Шинжилгээ", type="primary", use_container_width=True) and tb_files and led_files:
         with st.spinner("TB уншиж байна..."):
