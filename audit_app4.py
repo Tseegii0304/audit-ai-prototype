@@ -437,13 +437,15 @@ def detect_file_type(f):
 
     # ── Файлын нэрээр хурдан таних ──
     name_check = fname_orig.lower().replace('_', ' ').replace('-', ' ')
-    # ЕДТ / Ерөнхий журнал / Ерөнхий дэвтэр
-    edt_keywords = ['ерөнхий журнал', 'ерөнхий дэвтэр', 'едт', 'edt', 'general ledger', 'general journal']
+    # ЕДТ / Ерөнхий журнал / Journal
+    edt_keywords = ['ерөнхий журнал', 'ерөнхий дэвтэр', 'едт', 'edt', 'general ledger', 'general journal',
+                    'еренхий журнал', 'journal gc', 'journal entry', 'journal entries']
     for kw in edt_keywords:
         if kw in name_check:
             return 'edt', year
-    # ГҮЙЛГЭЭ_БАЛАНС
-    tb_keywords = ['гүйлгээ баланс', 'гүйлгээ_баланс', 'гуйлгээ баланс', 'trial balance']
+    # ГҮЙЛГЭЭ_БАЛАНС / Trial Balance / Journal TB
+    tb_keywords = ['гүйлгээ баланс', 'гүйлгээ_баланс', 'гуйлгээ баланс', 'trial balance',
+                   'гүйлгэ баланс', 'гуйлгэ баланс', 'journal, tb', 'journal tb']
     for kw in tb_keywords:
         if kw in name_check:
             return 'raw_tb', year
