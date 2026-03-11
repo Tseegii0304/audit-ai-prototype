@@ -407,6 +407,36 @@ elif page.startswith("2"):
                 rm_all, mo_all = load_part1(p1_files)
         with st.spinner("🤖 ХОУ шинжилгээ ажиллуулж байна..."):
             df, X, y, feats, res, best, fi, ym = run_ml(tb_all, cont, nest)
+        # Store all results in session_state
+        st.session_state['analysis_done'] = True
+        st.session_state['df'] = df
+        st.session_state['X'] = X
+        st.session_state['y'] = y
+        st.session_state['feats'] = feats
+        st.session_state['res'] = res
+        st.session_state['best'] = best
+        st.session_state['fi'] = fi
+        st.session_state['ym'] = ym
+        st.session_state['tb_st'] = tb_st
+        st.session_state['led_st'] = led_st
+        st.session_state['rm_all'] = rm_all
+        st.session_state['mo_all'] = mo_all
+
+    # Display results from session_state (persists across reruns)
+    if st.session_state.get('analysis_done', False):
+        df = st.session_state['df']
+        X = st.session_state['X']
+        y = st.session_state['y']
+        feats = st.session_state['feats']
+        res = st.session_state['res']
+        best = st.session_state['best']
+        fi = st.session_state['fi']
+        ym = st.session_state['ym']
+        tb_st = st.session_state['tb_st']
+        led_st = st.session_state['led_st']
+        rm_all = st.session_state['rm_all']
+        mo_all = st.session_state['mo_all']
+
         st.success(f"✅ {len(df):,} данс, {sum(d['rows'] for d in led_st.values()):,} гүйлгээ")
         yrs = sorted(tb_st.keys())
         bp = res[best]['pred']
@@ -558,5 +588,5 @@ elif page.startswith("2"):
 
         td.show_dashboard_footer()
 
-    elif not tb_files or not led_files:
+    if not st.session_state.get('analysis_done', False) and (not tb_files or not led_files):
         st.info("👆 TB + Ledger upload хийнэ. Part1 нэмбэл эрсдэлийн матриц + сарын trend нэмэгдэнэ.")
