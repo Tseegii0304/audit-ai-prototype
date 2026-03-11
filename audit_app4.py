@@ -307,16 +307,40 @@ def detect_file_type(f):
     Types: 'raw_tb', 'edt', 'tb_std', 'ledger', 'part1', 'unknown'
     """
     name = f.name.lower()
+    fname_orig = f.name
     year = get_year(f.name)
 
     # CSV/GZ → Ledger
     if name.endswith('.csv') or name.endswith('.gz') or name.endswith('.csv.gz'):
         return 'ledger', year
 
-    # XLSX → need to check sheets
+    # XLSX → need to check
     if not name.endswith('.xlsx'):
         return 'unknown', year
 
+    # ── Файлын нэрээр хурдан таних ──
+    name_check = fname_orig.lower().replace('_', ' ').replace('-', ' ')
+    # ЕДТ / Ерөнхий журнал / Ерөнхий дэвтэр
+    edt_keywords = ['ерөнхий журнал', 'ерөнхий дэвтэр', 'едт', 'edt', 'general ledger', 'general journal']
+    for kw in edt_keywords:
+        if kw in name_check:
+            return 'edt', year
+    # ГҮЙЛГЭЭ_БАЛАНС
+    tb_keywords = ['гүйлгээ баланс', 'гүйлгээ_баланс', 'гуйлгээ баланс', 'trial balance']
+    for kw in tb_keywords:
+        if kw in name_check:
+            return 'raw_tb', year
+    # TB_standardized
+    if 'tb_standardized' in name_check or 'tb standardized' in name_check:
+        return 'tb_std', year
+    # Part1
+    if 'part1' in name_check or 'part 1' in name_check:
+        return 'part1', year
+    # Ledger
+    if 'ledger' in name_check or 'prototype_ledger' in name_check:
+        return 'ledger', year
+
+    # ── Sheet бүтцээр таних ──
     import openpyxl
     try:
         raw = f.read()
@@ -326,7 +350,6 @@ def detect_file_type(f):
 
         # TB_standardized: has '02_ACCOUNT_SUMMARY' sheet
         if '02_ACCOUNT_SUMMARY' in sheets:
-            # Could be TB_std or Part1 — check for risk matrix
             if '04_RISK_MATRIX' in sheets:
                 wb.close()
                 return 'part1', year
@@ -338,20 +361,24 @@ def detect_file_type(f):
             wb.close()
             return 'part1', year
 
-        # Check first sheet content to distinguish ЕДТ vs ГҮЙЛГЭЭ_БАЛАНС
+        # ── Агуулгаар таних (200 мөр хүртэл шалгана) ──
         ws = wb[sheets[0]]
         sample_rows = []
         for i, row in enumerate(ws.iter_rows(values_only=True)):
             sample_rows.append(row)
-            if i >= 30:
+            if i >= 200:
                 break
         wb.close()
 
-        # ЕДТ: contains "Данс:" pattern
+        # ЕДТ: contains "Данс:" or "Компани:" or "ЕРӨНХИЙ" or "Журнал:" pattern
         for row in sample_rows:
             if row[0] is not None:
                 s = str(row[0]).strip()
-                if s.startswith('Данс:') or s.startswith('Компани:') or s.startswith('ЕРӨНХИЙ'):
+                if s.startswith('Данс:') or s.startswith('Компани:') or s.startswith('ЕРӨНХИЙ') or s.startswith('Журнал:'):
+                    return 'edt', year
+            # ЕДТ: column with "Данс:" might be in other columns too
+            for cell in row[:5]:
+                if cell is not None and 'Данс:' in str(cell):
                     return 'edt', year
 
         # ГҮЙЛГЭЭ_БАЛАНС: has account codes like 101-XX-XX-XXX in column B
