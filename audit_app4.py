@@ -413,11 +413,11 @@ elif page.startswith("2"):
         has_rm = len(rm_all) > 0
         has_mo = len(mo_all) > 0
 
-        tab_names = ["📊 Нэгтгэл", "🔴 Аномали", "⚔️ ХОУ vs MUS", "🧠 XAI", "📋 Жагсаалт"]
+        tab_names = ["📊 Нэгтгэл", "🔍 Хэвийн бус данс", "⚖️ ХОУ ↔ Уламжлалт", "🧠 Тайлбарлагдах ХОУ", "📋 Жагсаалт"]
         if has_rm:
             tab_names.append("🎯 Эрсдэлийн матриц")
         if has_mo:
-            tab_names.append("📈 Сарын trend")
+            tab_names.append("📈 Сарын хандлага")
         all_tabs = st.tabs(tab_names)
 
         with all_tabs[0]:
