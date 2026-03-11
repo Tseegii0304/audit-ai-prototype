@@ -300,95 +300,268 @@ def run_ml(tb_all, cont, n_est):
     return df, X, y, feats, res, best, fi, ym
 
 # ═══════════════════════════════════════
-# 1️⃣ ӨГӨГДӨЛ БЭЛТГЭХ
+# 🧠 УХААЛАГ ФАЙЛ ТАНИХ СИСТЕМ
 # ═══════════════════════════════════════
+def detect_file_type(f):
+    """Файлын төрлийг автоматаар таних. Returns: (type, year)
+    Types: 'raw_tb', 'edt', 'tb_std', 'ledger', 'part1', 'unknown'
+    """
+    name = f.name.lower()
+    year = get_year(f.name)
+
+    # CSV/GZ → Ledger
+    if name.endswith('.csv') or name.endswith('.gz') or name.endswith('.csv.gz'):
+        return 'ledger', year
+
+    # XLSX → need to check sheets
+    if not name.endswith('.xlsx'):
+        return 'unknown', year
+
+    import openpyxl
+    try:
+        raw = f.read()
+        f.seek(0)
+        wb = openpyxl.load_workbook(io.BytesIO(raw), read_only=True)
+        sheets = wb.sheetnames
+
+        # TB_standardized: has '02_ACCOUNT_SUMMARY' sheet
+        if '02_ACCOUNT_SUMMARY' in sheets:
+            # Could be TB_std or Part1 — check for risk matrix
+            if '04_RISK_MATRIX' in sheets:
+                wb.close()
+                return 'part1', year
+            wb.close()
+            return 'tb_std', year
+
+        # Part1: has '04_RISK_MATRIX' sheet
+        if '04_RISK_MATRIX' in sheets:
+            wb.close()
+            return 'part1', year
+
+        # Check first sheet content to distinguish ЕДТ vs ГҮЙЛГЭЭ_БАЛАНС
+        ws = wb[sheets[0]]
+        sample_rows = []
+        for i, row in enumerate(ws.iter_rows(values_only=True)):
+            sample_rows.append(row)
+            if i >= 30:
+                break
+        wb.close()
+
+        # ЕДТ: contains "Данс:" pattern
+        for row in sample_rows:
+            if row[0] is not None:
+                s = str(row[0]).strip()
+                if s.startswith('Данс:') or s.startswith('Компани:') or s.startswith('ЕРӨНХИЙ'):
+                    return 'edt', year
+
+        # ГҮЙЛГЭЭ_БАЛАНС: has account codes like 101-XX-XX-XXX in column B
+        for row in sample_rows:
+            if len(row) >= 2 and row[1] is not None:
+                code = str(row[1]).strip()
+                if re.match(r'\d{3}-\d{2}-\d{2}-\d{3}', code):
+                    return 'raw_tb', year
+
+        # Fallback: check if it looks like a balance sheet
+        for row in sample_rows:
+            if row[0] is not None:
+                try:
+                    int(float(row[0]))
+                    if len(row) >= 8 and row[1] is not None and re.match(r'\d{3}-', str(row[1])):
+                        return 'raw_tb', year
+                except:
+                    pass
+
+        return 'unknown', year
+    except Exception:
+        f.seek(0)
+        return 'unknown', year
+
+FILE_TYPE_LABELS = {
+    'raw_tb': ('📗 ГҮЙЛГЭЭ_БАЛАНС', 'Гүйлгээ-балансын түүхий файл → TB болгон хөрвүүлнэ'),
+    'edt': ('📘 ЕДТ', 'Ерөнхий дэвтрийн тайлан → Ledger + Part1 болгон хөрвүүлнэ'),
+    'tb_std': ('📊 TB_standardized', 'Стандартчилсан гүйлгээ-баланс → Шинжилгээнд бэлэн'),
+    'ledger': ('📄 Ledger CSV/GZ', 'Ерөнхий дэвтрийн гүйлгээ → Шинжилгээнд бэлэн'),
+    'part1': ('📈 Part1', 'Сарын нэгтгэл + Эрсдэлийн матриц → Шинжилгээнд бэлэн'),
+    'unknown': ('❓ Тодорхойгүй', 'Файлын төрлийг таних боломжгүй'),
+}
 if page.startswith("1"):
     st.header("1️⃣ Өгөгдөл бэлтгэх")
-    tb_tab, led_tab = st.tabs(["📗 ГҮЙЛГЭЭ_БАЛАНС → TB", "📘 ЕДТ → Ledger + Part1"])
+    st.markdown("""
+    <div style="background-color: #E3F2FD; padding: 15px; border-radius: 8px; border-left: 4px solid #1565C0; margin-bottom: 15px;">
+        <b>📂 Ямар ч файлыг оруулаарай!</b> Систем автоматаар таниж, зөв формат руу хөрвүүлнэ.<br>
+        <span style="color: #555; font-size: 13px;">
+        Дэмжих файлууд: ГҮЙЛГЭЭ_БАЛАНС (.xlsx), ЕДТ (.xlsx) — хэдэн ч файл, ямар ч дараалал
+        </span>
+    </div>
+    """, unsafe_allow_html=True)
 
-    with tb_tab:
-        st.info("ГҮЙЛГЭЭ_БАЛАНС Excel → TB_standardized XLSX")
-        raw_tb = st.file_uploader("ГҮЙЛГЭЭ_БАЛАНС файлууд", type=['xlsx'], accept_multiple_files=True, key='raw_tb')
-        if st.button("⚙️ TB бэлтгэх", type="primary", use_container_width=True, key='btn_tb') and raw_tb:
-            if 'tb_res' not in st.session_state:
-                st.session_state.tb_res = {}
-            for f in raw_tb:
-                year = get_year(f.name)
-                with st.spinner(f"{year}..."):
-                    buf, tb_s = process_raw_tb(f)
-                    st.session_state.tb_res[year] = {'buf': buf.getvalue(), 'tb': tb_s}
-                st.success(f"✅ {year}: {len(tb_s):,} данс, {tb_s['turnover_debit'].sum()/1e9:,.2f}T₮")
-        if 'tb_res' in st.session_state and st.session_state.tb_res:
-            for yr in sorted(st.session_state.tb_res.keys()):
-                d = st.session_state.tb_res[yr]
-                st.download_button(f"📥 TB_standardized_{yr}1231.xlsx ({len(d['tb']):,} данс)", d['buf'], f"TB_standardized_{yr}1231.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key=f"dtb{yr}")
+    uploaded = st.file_uploader("📎 Бүх файлуудаа энд оруулна уу", type=['xlsx', 'csv', 'gz'], accept_multiple_files=True, key='smart_prep')
 
-    with led_tab:
-        st.info("ЕДТ Excel → Ledger CSV (шахсан .gz) + Part1 XLSX")
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            st.markdown("**2023**")
-            edt23 = st.file_uploader("ЕДТ 2023", type=['xlsx'], key='e23')
-        with c2:
-            st.markdown("**2024**")
-            edt24 = st.file_uploader("ЕДТ 2024", type=['xlsx'], key='e24', accept_multiple_files=True)
-        with c3:
-            st.markdown("**2025**")
-            edt25 = st.file_uploader("ЕДТ 2025", type=['xlsx'], key='e25', accept_multiple_files=True)
-        if st.button("⚙️ Ledger + Part1 бэлтгэх", type="primary", use_container_width=True, key='btn_led'):
-            if 'led_res' not in st.session_state:
-                st.session_state.led_res = {}
-            if edt23:
-                with st.spinner("2023..."):
-                    d23, c23 = process_edt(edt23, 2023)
-                    st.session_state.led_res[2023] = d23
-                st.success(f"✅ 2023: {c23:,} гүйлгээ")
-            if edt24:
-                with st.spinner("2024..."):
-                    fr = [process_edt(f, 2024)[0] for f in edt24]
-                    d24 = pd.concat(fr, ignore_index=True)
-                    st.session_state.led_res[2024] = d24
-                st.success(f"✅ 2024: {len(d24):,} гүйлгээ")
-            if edt25:
-                with st.spinner("2025..."):
-                    fr = [process_edt(f, 2025)[0] for f in edt25]
-                    d25 = pd.concat(fr, ignore_index=True)
-                    st.session_state.led_res[2025] = d25
-                st.success(f"✅ 2025: {len(d25):,} гүйлгээ")
-        if 'led_res' in st.session_state and st.session_state.led_res:
-            cols_out = ['report_year', 'account_code', 'account_name', 'transaction_no', 'transaction_date', 'journal_no', 'document_no', 'counterparty_name', 'counterparty_id', 'transaction_description', 'debit_mnt', 'credit_mnt', 'balance_mnt', 'month']
-            for yr in sorted(st.session_state.led_res.keys()):
-                dfy = st.session_state.led_res[yr]
-                dfy['debit_mnt'] = pd.to_numeric(dfy['debit_mnt'], errors='coerce').fillna(0)
-                dfy['credit_mnt'] = pd.to_numeric(dfy['credit_mnt'], errors='coerce').fillna(0)
-                with st.expander(f"📅 {yr} — {len(dfy):,} гүйлгээ", expanded=True):
-                    with st.spinner(f"Part1 {yr}..."):
-                        p1_buf, p1_mo, p1_acct, p1_rm, n_risk = generate_part1(dfy, yr)
-                    c1x, c2x, c3x = st.columns(3)
-                    c1x.metric("Гүйлгээ", f"{len(dfy):,}")
-                    c2x.metric("Эрсдэлийн хос", f"{len(p1_rm):,}")
-                    c3x.metric("Эрсдэлтэй", f"{n_risk:,}")
-                    # Ledger CSV.GZ (шахсан)
-                    csv_bytes = dfy[cols_out].to_csv(index=False).encode('utf-8')
-                    gz_bytes = gzip.compress(csv_bytes)
-                    st.caption(f"CSV: {len(csv_bytes)/1e6:.0f}MB → GZ: {len(gz_bytes)/1e6:.0f}MB")
-                    st.download_button(f"📥 prototype_ledger_{yr}.csv.gz (шахсан)", gz_bytes, f"prototype_ledger_{yr}.csv.gz", "application/gzip", key=f"dled{yr}")
-                    # Part1
-                    st.download_button(f"📥 prototype_part1_{yr}.xlsx", p1_buf.getvalue(), f"prototype_part1_{yr}.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key=f"dp1{yr}")
+    if uploaded:
+        detected = []
+        for f in uploaded:
+            ftype, year = detect_file_type(f)
+            f.seek(0)
+            detected.append({'file': f, 'type': ftype, 'year': year, 'name': f.name})
+
+        st.markdown("### 🔍 Таних үр дүн")
+        det_rows = []
+        for d in detected:
+            label, desc = FILE_TYPE_LABELS.get(d['type'], FILE_TYPE_LABELS['unknown'])
+            det_rows.append({'Файл': d['name'], 'Төрөл': label, 'Он': d['year'], 'Тайлбар': desc})
+        st.dataframe(pd.DataFrame(det_rows), use_container_width=True, hide_index=True)
+
+        raw_tbs = [d for d in detected if d['type'] == 'raw_tb']
+        edts = [d for d in detected if d['type'] == 'edt']
+        unknowns = [d for d in detected if d['type'] == 'unknown']
+        ready = [d for d in detected if d['type'] in ('tb_std', 'ledger', 'part1')]
+
+        if unknowns:
+            st.warning(f"⚠️ {len(unknowns)} файл танигдсангүй: {', '.join(u['name'] for u in unknowns)}")
+        if ready:
+            st.success(f"✅ Шинжилгээнд бэлэн: {len(ready)} файл → **2️⃣ Шинжилгээ** руу шилжээрэй")
+
+        if raw_tbs or edts:
+            if st.button("⚙️ Хөрвүүлэлт эхлүүлэх", type="primary", use_container_width=True, key='btn_smart'):
+                if raw_tbs:
+                    if 'tb_res' not in st.session_state:
+                        st.session_state.tb_res = {}
+                    for d in raw_tbs:
+                        with st.spinner(f"📗 ГҮЙЛГЭЭ_БАЛАНС {d['year']} хөрвүүлж байна..."):
+                            d['file'].seek(0)
+                            buf, tb_s = process_raw_tb(d['file'])
+                            st.session_state.tb_res[d['year']] = {'buf': buf.getvalue(), 'tb': tb_s}
+                        st.success(f"✅ TB {d['year']}: {len(tb_s):,} данс")
+                if edts:
+                    if 'led_res' not in st.session_state:
+                        st.session_state.led_res = {}
+                    edt_by_year = {}
+                    for d in edts:
+                        edt_by_year.setdefault(d['year'], []).append(d['file'])
+                    for yr in sorted(edt_by_year):
+                        with st.spinner(f"📘 ЕДТ {yr} хөрвүүлж байна ({len(edt_by_year[yr])} файл)..."):
+                            frames = []
+                            for f in edt_by_year[yr]:
+                                f.seek(0)
+                                df_e, _ = process_edt(f, yr)
+                                frames.append(df_e)
+                            st.session_state.led_res[yr] = pd.concat(frames, ignore_index=True)
+                        st.success(f"✅ ЕДТ {yr}: {len(st.session_state.led_res[yr]):,} гүйлгээ")
+
+    if 'tb_res' in st.session_state and st.session_state.tb_res:
+        st.markdown("---\n### 📥 TB файлууд")
+        for yr in sorted(st.session_state.tb_res):
+            d = st.session_state.tb_res[yr]
+            st.download_button(f"📥 TB_standardized_{yr}.xlsx ({len(d['tb']):,} данс)", d['buf'], f"TB_standardized_{yr}1231.xlsx", key=f"dtb{yr}")
+
+    if 'led_res' in st.session_state and st.session_state.led_res:
+        st.markdown("---\n### 📥 Ledger + Part1")
+        cols_out = ['report_year','account_code','account_name','transaction_no','transaction_date','journal_no','document_no','counterparty_name','counterparty_id','transaction_description','debit_mnt','credit_mnt','balance_mnt','month']
+        for yr in sorted(st.session_state.led_res):
+            dfy = st.session_state.led_res[yr]
+            dfy['debit_mnt'] = pd.to_numeric(dfy['debit_mnt'], errors='coerce').fillna(0)
+            dfy['credit_mnt'] = pd.to_numeric(dfy['credit_mnt'], errors='coerce').fillna(0)
+            with st.expander(f"📅 {yr} — {len(dfy):,} гүйлгээ", expanded=True):
+                p1_buf, p1_mo, p1_acct, p1_rm, n_risk = generate_part1(dfy, yr)
+                c1x, c2x, c3x = st.columns(3)
+                c1x.metric("Гүйлгээ", f"{len(dfy):,}")
+                c2x.metric("Эрсдэлийн хос", f"{len(p1_rm):,}")
+                c3x.metric("Эрсдэлтэй", f"{n_risk:,}")
+                gz_bytes = gzip.compress(dfy[cols_out].to_csv(index=False).encode('utf-8'))
+                st.download_button(f"📥 ledger_{yr}.csv.gz", gz_bytes, f"prototype_ledger_{yr}.csv.gz", key=f"dled{yr}")
+                st.download_button(f"📥 part1_{yr}.xlsx", p1_buf.getvalue(), f"prototype_part1_{yr}.xlsx", key=f"dp1{yr}")
 
 # ═══════════════════════════════════════
 # 2️⃣ ШИНЖИЛГЭЭ
 # ═══════════════════════════════════════
 elif page.startswith("2"):
     st.header("2️⃣ ХОУ Шинжилгээ")
-    st.info("TB + Ledger + Part1 → 3 давхаргат шинжилгээ")
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        tb_files = st.file_uploader("TB (.xlsx)", type=['xlsx'], accept_multiple_files=True, key='tb3')
-    with c2:
-        led_files = st.file_uploader("Ledger (.csv/.gz)", type=['csv', 'gz'], accept_multiple_files=True, key='led3')
-    with c3:
-        p1_files = st.file_uploader("Part1 (.xlsx) - нэмэлт", type=['xlsx'], accept_multiple_files=True, key='p13')
+    st.markdown("""
+    <div style="background-color: #E8F5E9; padding: 15px; border-radius: 8px; border-left: 4px solid #2E7D32; margin-bottom: 15px;">
+        <b>📂 Ямар ч файлаа нэг дор оруулаарай!</b> Систем автоматаар таниж, хөрвүүлж, шинжилгээг ажиллуулна.<br>
+        <span style="color: #555; font-size: 13px;">
+        ГҮЙЛГЭЭ_БАЛАНС, ЕДТ, TB, Ledger, Part1 — бүгдийг нь оруулаад болно. Систем өөрөө ялгана.
+        </span>
+    </div>
+    """, unsafe_allow_html=True)
+
+    all_files = st.file_uploader("📎 Бүх файлуудаа энд оруулна уу (ямар ч формат, хэдэн ч файл)", type=['xlsx', 'csv', 'gz'], accept_multiple_files=True, key='smart_analysis')
+
+    tb_files = []
+    led_files = []
+    p1_files = []
+
+    if all_files:
+        detected = []
+        for f in all_files:
+            ftype, year = detect_file_type(f)
+            f.seek(0)
+            detected.append({'file': f, 'type': ftype, 'year': year, 'name': f.name})
+
+        # Show detection summary
+        det_rows = []
+        for d in detected:
+            label, desc = FILE_TYPE_LABELS.get(d['type'], FILE_TYPE_LABELS['unknown'])
+            det_rows.append({'Файл': d['name'], 'Төрөл': label, 'Он': d['year'], 'Тайлбар': desc})
+        st.dataframe(pd.DataFrame(det_rows), use_container_width=True, hide_index=True)
+
+        # Auto-convert raw files + route ready files
+        raw_tbs = [d for d in detected if d['type'] == 'raw_tb']
+        edts = [d for d in detected if d['type'] == 'edt']
+        need_convert = len(raw_tbs) > 0 or len(edts) > 0
+
+        if need_convert:
+            st.info(f"🔄 **{len(raw_tbs)} ГҮЙЛГЭЭ_БАЛАНС + {len(edts)} ЕДТ** файл автоматаар хөрвүүлэгдэнэ.")
+
+        for d in detected:
+            if d['type'] == 'tb_std':
+                tb_files.append(d['file'])
+            elif d['type'] == 'ledger':
+                led_files.append(d['file'])
+            elif d['type'] == 'part1':
+                p1_files.append(d['file'])
+            elif d['type'] == 'raw_tb':
+                # Auto-convert ГҮЙЛГЭЭ_БАЛАНС → TB_standardized
+                with st.spinner(f"📗 {d['name']} → TB хөрвүүлж байна..."):
+                    d['file'].seek(0)
+                    buf, _ = process_raw_tb(d['file'])
+                    buf.seek(0)
+                    tb_wrap = io.BytesIO(buf.getvalue())
+                    tb_wrap.name = f"TB_standardized_{d['year']}1231.xlsx"
+                    tb_files.append(tb_wrap)
+                st.success(f"✅ {d['name']} → TB хөрвүүлсэн")
+            elif d['type'] == 'edt':
+                # Auto-convert ЕДТ → Ledger + Part1
+                with st.spinner(f"📘 {d['name']} → Ledger + Part1 хөрвүүлж байна..."):
+                    d['file'].seek(0)
+                    df_edt, cnt = process_edt(d['file'], d['year'])
+                    # Ledger CSV → file-like object
+                    cols_out = ['report_year','account_code','account_name','transaction_no','transaction_date',
+                                'journal_no','document_no','counterparty_name','counterparty_id',
+                                'transaction_description','debit_mnt','credit_mnt','balance_mnt','month']
+                    df_edt['debit_mnt'] = pd.to_numeric(df_edt['debit_mnt'], errors='coerce').fillna(0)
+                    df_edt['credit_mnt'] = pd.to_numeric(df_edt['credit_mnt'], errors='coerce').fillna(0)
+                    csv_bytes = df_edt[cols_out].to_csv(index=False).encode('utf-8')
+                    led_wrap = io.BytesIO(csv_bytes)
+                    led_wrap.name = f"prototype_ledger_{d['year']}.csv"
+                    led_files.append(led_wrap)
+                    # Part1 XLSX → file-like object
+                    p1_buf, _, _, _, _ = generate_part1(df_edt, d['year'])
+                    p1_buf.seek(0)
+                    p1_wrap = io.BytesIO(p1_buf.getvalue())
+                    p1_wrap.name = f"prototype_part1_{d['year']}.xlsx"
+                    p1_files.append(p1_wrap)
+                st.success(f"✅ {d['name']} → Ledger ({cnt:,} гүйлгээ) + Part1 хөрвүүлсэн")
+
+        if tb_files and led_files:
+            st.success(f"🎯 Шинжилгээнд бэлэн: TB {len(tb_files)} | Ledger {len(led_files)} | Part1 {len(p1_files)}")
+        elif tb_files and not led_files:
+            st.info("👆 Ledger (.csv/.gz) эсвэл ЕДТ (.xlsx) файл нэмнэ үү")
+        elif led_files and not tb_files:
+            st.info("👆 TB (.xlsx) эсвэл ГҮЙЛГЭЭ_БАЛАНС (.xlsx) файл нэмнэ үү")
+        elif not tb_files and not led_files and not need_convert:
+            st.info("👆 TB + Ledger файлуудаа оруулна уу")
+
     c1s, c2s = st.columns(2)
     with c1s:
         cont = st.slider("IF contamination", 0.05, 0.20, 0.10, 0.01)
