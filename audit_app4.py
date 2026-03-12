@@ -468,9 +468,8 @@ def run_txn_anomaly(df, cont=0.05):
             df[f] = 0
     X = df[feats].fillna(0).replace([np.inf,-np.inf], 0).astype(float)
     iso = IsolationForest(contamination=cont, random_state=42, n_estimators=200, n_jobs=1)
-    iso.fit(X)
-    df['txn_anomaly'] = (iso.predict(X)==-1).astype(int)
-    df['txn_score'] = -iso.decision_function(X)
+    df['txn_anomaly'] = (iso.fit_predict(X)==-1).astype(int)
+    df['txn_score'] = -iso.score_samples(X)
     try:
         z = np.abs(StandardScaler().fit_transform(X))
         df['txn_zscore_flag'] = (z.max(axis=1)>2.5).astype(int)
@@ -1150,9 +1149,16 @@ elif page.startswith("2"):
 
                 # Жагсаалт
                 st.markdown("---")
-                risk_f = st.selectbox("Эрсдэлийн түвшин:", ['Бүгд','🔴 Маш өндөр','🟠 Өндөр','🟡 Дунд'], key='txn_risk_f')
+                txn_years = sorted(txn_result['report_year'].dropna().unique().tolist()) if 'report_year' in txn_result.columns else []
+                fc1, fc2 = st.columns(2)
+                with fc1:
+                    risk_f = st.selectbox("Эрсдэлийн түвшин:", ['Бүгд','🔴 Маш өндөр','🟠 Өндөр','🟡 Дунд'], key='txn_risk_f')
+                with fc2:
+                    year_f = st.selectbox("Он:", ['Бүгд'] + [str(y) for y in txn_years], key='txn_year_f')
                 t_show = txn_result[txn_result['txn_anomaly']==1].copy() if risk_f=='Бүгд' else txn_result[txn_result['txn_risk_level']==risk_f].copy()
-                cols_show = ['txn_risk_level','txn_risk','account_code','account_name','counterparty_name','transaction_date','debit_mnt','credit_mnt','transaction_description','desc_mismatch','name_no_overlap','dir_mismatch','amt_zscore','is_dup','cp_rare']
+                if year_f != 'Бүгд' and 'report_year' in t_show.columns:
+                    t_show = t_show[t_show['report_year'].astype(str)==year_f]
+                cols_show = ['txn_risk_level','txn_risk','report_year','account_code','account_name','counterparty_name','transaction_date','debit_mnt','credit_mnt','transaction_description','desc_mismatch','name_no_overlap','dir_mismatch','amt_zscore','is_dup','cp_rare']
                 t_disp = t_show[[c for c in cols_show if c in t_show.columns]].sort_values('txn_risk', ascending=False)
                 st.write(f"Нийт: **{len(t_disp):,}** гүйлгээ")
                 st.dataframe(t_disp, use_container_width=True, hide_index=True, height=500)
@@ -1161,25 +1167,36 @@ elif page.startswith("2"):
 
             with all_tabs[next_idx]:
                 st.subheader("👤 Харилцагчаар нэгтгэсэн эрсдэл")
-                cp_r = txn_result[txn_result['counterparty_name'].fillna('')!=''].groupby('counterparty_name').agg(
+                txn_years2 = sorted(txn_result['report_year'].dropna().unique().tolist()) if 'report_year' in txn_result.columns else []
+                year_f2 = st.selectbox("Он:", ['Бүгд'] + [str(y) for y in txn_years2], key='cp_year_f')
+                txn_filtered = txn_result.copy()
+                if year_f2 != 'Бүгд' and 'report_year' in txn_filtered.columns:
+                    txn_filtered = txn_filtered[txn_filtered['report_year'].astype(str)==year_f2]
+                cp_r = txn_filtered[txn_filtered['counterparty_name'].fillna('')!=''].groupby('counterparty_name').agg(
                     total=('amount','count'), anomaly=('txn_anomaly','sum'), amount=('amount','sum'),
                     accounts=('account_code','nunique'), desc_mis=('desc_mismatch','sum'), dir_mis=('dir_mismatch','sum')
                 ).reset_index()
                 cp_r['anomaly_pct'] = (cp_r['anomaly']/cp_r['total']*100).round(1)
                 cp_r = cp_r.sort_values('anomaly', ascending=False)
                 cp_r.columns = ['Харилцагч','Нийт гүйлгээ','Хэвийн бус','Нийт дүн','Дансны тоо','Тайлбар зөрчил','Чиглэл зөрчил','Хэвийн бус %']
+                st.write(f"Нийт: **{len(cp_r):,}** харилцагч")
                 st.dataframe(cp_r.head(50), use_container_width=True, hide_index=True)
+                st.download_button("📥 Харилцагчийн жагсаалт CSV", cp_r.to_csv(index=False).encode('utf-8-sig'), "counterparty_risk.csv", key='dl_cp')
                 top20 = cp_r.head(20)
-                st.plotly_chart(px.bar(top20, x='Хэвийн бус', y='Харилцагч', orientation='h', color='Дансны тоо', color_continuous_scale='Reds', title='Топ 20 — хэвийн бус гүйлгээтэй харилцагч').update_layout(height=500, yaxis={'categoryorder':'total ascending'}), use_container_width=True)
+                if len(top20) > 0:
+                    st.plotly_chart(px.bar(top20, x='Хэвийн бус', y='Харилцагч', orientation='h', color='Дансны тоо', color_continuous_scale='Reds', title='Топ 20 — хэвийн бус гүйлгээтэй харилцагч').update_layout(height=500, yaxis={'categoryorder':'total ascending'}), use_container_width=True)
                 # Дансаар
+                st.markdown("---")
                 st.subheader("🏷️ Дансаар нэгтгэсэн эрсдэл")
-                acct_r = txn_result.groupby(['account_code','account_name']).agg(
+                acct_r = txn_filtered.groupby(['account_code','account_name']).agg(
                     total=('amount','count'), anomaly=('txn_anomaly','sum'), desc_mis=('desc_mismatch','sum'), dir_mis=('dir_mismatch','sum')
                 ).reset_index()
                 acct_r['anomaly_pct'] = (acct_r['anomaly']/acct_r['total']*100).round(1)
                 acct_r = acct_r.sort_values('anomaly', ascending=False)
                 acct_r.columns = ['Дансны код','Дансны нэр','Нийт','Хэвийн бус','Тайлбар зөрчил','Чиглэл зөрчил','Хэвийн бус %']
+                st.write(f"Нийт: **{len(acct_r):,}** данс")
                 st.dataframe(acct_r.head(50), use_container_width=True, hide_index=True)
+                st.download_button("📥 Дансны жагсаалт CSV", acct_r.to_csv(index=False).encode('utf-8-sig'), "account_risk.csv", key='dl_acct')
             next_idx += 1
 
         if has_rm:
