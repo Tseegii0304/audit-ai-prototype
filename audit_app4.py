@@ -58,17 +58,17 @@ TB_SUMMARY_COLUMNS = [
 COL_SYNONYMS = {
     "account_code": ["дансны код","данс код","account code","account no","account number","gl code","gl account","acct no","acc code","код","данс"],
     "account_name": ["дансны нэр","данс нэр","account name","acc name","нэр"],
-    "transaction_date": ["огноо","date","transaction date","txn date"],
+    "transaction_date": ["огноо","date","transaction date","txn date","огноо гүйлгээ","гүйлгээний огноо"],
     "debit_mnt": ["debit amount","debit","дебит дүн","дебит","дт","dt","dr amount"],
     "credit_mnt": ["credit amount","credit","кредит дүн","кредит","кт","ct","cr amount"],
     "balance_mnt": ["үлдэгдэл","balance","ending balance","closing balance"],
-    "counterparty_name": ["харилцагч","байгууллагын нэр","counterparty","partner","vendor","customer"],
-    "transaction_description": ["гүйлгээний утга","утга","тайлбар","description","memo","narration"],
+    "counterparty_name": ["харилцагч","байгууллагын нэр","харилцагчийн нэр","байгууллага","counterparty","partner","vendor","customer"],
+    "transaction_description": ["гүйлгээний утга","гүйлгээний агуулга","гүйлгээний тайлбар","утга","тайлбар","description","memo","narration"],
     "journal_no": ["журнал","journal","journal no","журналын төрөл"],
-    "document_no": ["баримт","баримт №","document","doc no","document no","voucher"],
-    "amount_mnt": ["мөнгөн дүн","дүн","amount","txn amount","amount mnt"],
-    "debit_account": ["debit account","debit acc","дебет","дт данс"],
-    "credit_account": ["credit account","credit acc","кредит","кт данс"],
+    "document_no": ["баримт","баримт №","баримтын дугаар","баримт дугаар","дугаар","№","document","doc no","document no","voucher"],
+    "amount_mnt": ["мөнгөн дүн","гүйлгээний дүн","дүн төг","дүн","amount","txn amount","amount mnt"],
+    "debit_account": ["debit account","debit acc","дебет данс","дебет","дт данс","дт"],
+    "credit_account": ["credit account","credit acc","кредит данс","кредит","кт данс","кт"],
 }
 
 READY_FILE_LABELS = {
@@ -203,43 +203,112 @@ def excel_sheets(file_obj):
     except Exception:
         return [], raw
 
+
+def detect_header_row(df_preview, min_hits=3):
+    """
+    Preview DataFrame-ээс аль мөр нь жинхэнэ header болохыг танина.
+    """
+    best_idx, best_hits = 0, 0
+    nrows = min(15, len(df_preview))
+    for i in range(nrows):
+        row_vals = [str(v).strip().lower() for v in df_preview.iloc[i].tolist() if pd.notna(v)]
+        hits = 0
+        for vals in COL_SYNONYMS.values():
+            for token in vals:
+                if any(token in rv for rv in row_vals):
+                    hits += 1
+                    break
+        if hits > best_hits:
+            best_hits = hits
+            best_idx = i
+    return best_idx if best_hits >= min_hits else 0
+
+def read_excel_smart(raw_bytes, sheet_name, nrows=None):
+    """
+    Sheet-ийг эхлээд headerгүй preview хийгээд,
+    дараа нь жинхэнэ header мөрийг олж дахин уншина.
+    """
+    preview = pd.read_excel(io.BytesIO(raw_bytes), sheet_name=sheet_name, header=None, nrows=20)
+    hdr = detect_header_row(preview, min_hits=2)
+    return pd.read_excel(io.BytesIO(raw_bytes), sheet_name=sheet_name, header=hdr, nrows=nrows)
+
+
 def detect_file_type(file_obj):
     name = file_obj.name.lower()
     year = smart_year_from_name(file_obj.name)
+
+    # ready files first
     if name.endswith(".csv.gz") or name.endswith(".gz"):
         if "prototype_ledger" in name or "ledger" in name:
             return "ledger", year
+
     if name.endswith(".csv"):
         if "ledger" in name:
             return "ledger", year
+
     if name.endswith(".xlsx") or name.endswith(".xls"):
         if "tb_standardized" in name:
             return "tb_std", year
         if "prototype_part1" in name or "part1" in name:
             return "part1", year
+
     sheets, raw = excel_sheets(file_obj)
     if sheets:
-        low_sheets = {s.lower() for s in sheets}
+        low_sheets = {str(s).lower() for s in sheets}
         if "04_risk_matrix" in low_sheets:
             return "part1", year
         if "02_account_summary" in low_sheets:
             return "tb_std", year
+
         try:
-            for s in sheets[:3]:
-                df = pd.read_excel(io.BytesIO(raw), sheet_name=s, nrows=30)
+            for s in sheets[:10]:
+                df = read_excel_smart(raw, s, nrows=40)
+                headers = [str(c).strip().lower() for c in df.columns]
                 mapping = auto_map_columns(df.columns)
-                headers_join = " | ".join([str(c).lower() for c in df.columns])
+                headers_join = " | ".join(headers)
+
+                # 1) journal / edt
                 if {"debit_account", "credit_account", "amount_mnt"} <= set(mapping.keys()):
                     return "edt", year
-                if ("данс:" in headers_join) or ("журнал" in headers_join and "огноо" in headers_join):
+
+                if ("огноо" in headers_join and "дебет" in headers_join and "кредит" in headers_join):
                     return "edt", year
-                if {"debit_mnt", "credit_mnt", "transaction_date"} & set(mapping.keys()):
-                    if "account_code" in mapping or "transaction_description" in mapping:
+
+                if ("огноо" in headers_join and "мөнгөн дүн" in headers_join):
+                    return "edt", year
+
+                if {"transaction_date", "transaction_description"} & set(mapping.keys()):
+                    if "amount_mnt" in mapping or "debit_mnt" in mapping or "credit_mnt" in mapping:
                         return "edt", year
-                if "account_code" in mapping and len(df.columns) >= 8:
-                    return "raw_tb", year
+
+                # 2) raw TB
+                if "account_code" in mapping:
+                    tb_like = {"opening_debit","opening_credit","turnover_debit","turnover_credit","closing_debit","closing_credit"}
+                    hit_tb = len(tb_like & set(mapping.keys()))
+                    if hit_tb >= 2 or len(df.columns) >= 8:
+                        return "raw_tb", year
+
+                # 3) first-column content fallback
+                sample_text = " | ".join(
+                    str(v).strip().lower()
+                    for row in df.head(15).values.tolist()
+                    for v in row[:5]
+                    if pd.notna(v)
+                )
+                if "данс:" in sample_text or "ерөнхий журнал" in sample_text or "журнал" in sample_text:
+                    return "edt", year
+
+                # 4) account-code fallback
+                for col in df.columns[:5]:
+                    vals = df[col].dropna().astype(str).head(20).tolist()
+                    if sum(is_account_code(v) for v in vals) >= 3:
+                        if "огноо" in headers_join or "тайлбар" in headers_join or "утга" in headers_join:
+                            return "edt", year
+                        return "raw_tb", year
+
         except Exception:
             pass
+
     if name.endswith(".csv") or name.endswith(".gz") or name.endswith(".txt"):
         try:
             df = read_csv_flexible(file_obj)
@@ -248,6 +317,7 @@ def detect_file_type(file_obj):
                 return "ledger", year
         except Exception:
             pass
+
     return "unknown", year
 
 def process_raw_tb(file_obj, drop_unused=True):
