@@ -297,16 +297,21 @@ def load_tb(files):
     return pd.concat(frames, ignore_index=True), stats
 
 def load_ledger_stats(files):
+    """Ledger файлуудыг уншиж stats + бүрэн DataFrame буцаана."""
     stats = {}
+    all_frames = []
     for f in files:
         year = get_year(f.name)
+        f.seek(0)
         df = read_ledger(f)
         for c in ['debit_mnt', 'credit_mnt']:
             df[c] = pd.to_numeric(df[c], errors='coerce').fillna(0)
+        df['report_year'] = str(year)
         mo = df.groupby('month').agg(rows=('debit_mnt', 'count'), debit=('debit_mnt', 'sum'), credit=('credit_mnt', 'sum'))
         stats[year] = {'rows': len(df), 'accounts': df['account_code'].nunique(), 'months': df['month'].nunique(), 'monthly': mo}
-        del df
-    return stats
+        all_frames.append(df)
+    full_df = pd.concat(all_frames, ignore_index=True) if all_frames else pd.DataFrame()
+    return stats, full_df
 
 def load_part1(files):
     all_rm = []
@@ -329,99 +334,148 @@ def load_part1(files):
     mo_all = pd.concat(all_mo, ignore_index=True) if all_mo else pd.DataFrame()
     return rm_all, mo_all
 
-def load_ledger_full(files):
-    """Ledger файлуудыг бүтнээр уншиж нэгтгэнэ."""
-    frames = []
-    for f in files:
-        year = get_year(f.name); f.seek(0); df = read_ledger(f)
-        df['report_year'] = str(year)
-        for c in ['debit_mnt','credit_mnt']:
-            df[c] = pd.to_numeric(df[c], errors='coerce').fillna(0)
-        frames.append(df)
-    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
-
 def engineer_txn_features(d):
-    """Гүйлгээ бүрээс шинж чанар үүсгэнэ."""
+    """Гүйлгээ бүрээс шинж чанар үүсгэнэ. Дутуу багана байвал 0 утга ашиглана."""
+    d = d.copy()
+    # Баганууд байгаа эсэхийг шалгаж, дутууг нэмэх
+    for c in ['debit_mnt','credit_mnt','account_code','account_name','counterparty_name','transaction_description','transaction_date']:
+        if c not in d.columns:
+            d[c] = '' if c in ('account_code','account_name','counterparty_name','transaction_description','transaction_date') else 0
     d['debit_mnt'] = pd.to_numeric(d['debit_mnt'], errors='coerce').fillna(0)
     d['credit_mnt'] = pd.to_numeric(d['credit_mnt'], errors='coerce').fillna(0)
+    d['account_code'] = d['account_code'].astype(str).fillna('000')
+    d['account_name'] = d['account_name'].astype(str).fillna('')
+    d['counterparty_name'] = d['counterparty_name'].astype(str).fillna('')
+    d['transaction_description'] = d['transaction_description'].astype(str).fillna('')
+    d['transaction_date'] = d['transaction_date'].astype(str).fillna('')
+
     d['amount'] = d['debit_mnt'].abs() + d['credit_mnt'].abs()
     d['log_amount'] = np.log1p(d['amount'])
     d['is_debit'] = (d['debit_mnt'] > 0).astype(int)
-    le2 = LabelEncoder()
-    d['acct_cat_num'] = le2.fit_transform(d['account_code'].astype(str).str[:3].fillna('000'))
+
+    # Дансны ангилал
+    try:
+        le2 = LabelEncoder()
+        d['acct_cat_num'] = le2.fit_transform(d['account_code'].str[:3])
+    except:
+        d['acct_cat_num'] = 0
+
     # Бенфорд
-    def first_digit(x):
-        x = abs(x)
-        if x < 1: return 0
-        return int(str(int(x))[0])
-    d['benford_digit'] = d['amount'].apply(first_digit)
+    digits = d['amount'].apply(lambda x: int(str(int(abs(x)))[0]) if abs(x) >= 1 else 0)
+    d['benford_digit'] = digits
     benford_exp = {1:0.301,2:0.176,3:0.125,4:0.097,5:0.079,6:0.067,7:0.058,8:0.051,9:0.046}
     af = d[d['benford_digit']>0]['benford_digit'].value_counts(normalize=True)
     d['benford_dev'] = d['benford_digit'].map(lambda x: abs(af.get(x,0)-benford_exp.get(x,0)) if x>0 else 0)
+
     # Тэгс тоо
     d['is_round'] = (((d['amount']>=1e6)&(d['amount']%1e6==0)).astype(int) + ((d['amount']>=1e3)&(d['amount']%1e3==0)).astype(int))
+
     # Данс доторх z-score
-    as2 = d.groupby('account_code')['amount'].agg(['mean','std']).fillna(0); as2.columns=['acct_mean','acct_std']
-    d = d.merge(as2, on='account_code', how='left')
-    d['amt_zscore'] = np.where(d['acct_std']>0, (d['amount']-d['acct_mean'])/d['acct_std'], 0).clip(-10,10)
+    try:
+        as2 = d.groupby('account_code')['amount'].agg(['mean','std']).fillna(0)
+        as2.columns = ['acct_mean','acct_std']
+        d = d.merge(as2, on='account_code', how='left')
+        d['amt_zscore'] = np.where(d['acct_std']>0, (d['amount']-d['acct_mean'])/d['acct_std'], 0)
+        d['amt_zscore'] = d['amt_zscore'].clip(-10,10).fillna(0)
+    except:
+        d['acct_mean'] = 0; d['acct_std'] = 0; d['amt_zscore'] = 0
+
     # Ховор харилцагч
-    cp_f = d['counterparty_name'].value_counts()
-    d['cp_rare'] = (d['counterparty_name'].map(cp_f).fillna(0) <= 3).astype(int)
+    try:
+        cp_f = d['counterparty_name'].value_counts()
+        d['cp_rare'] = (d['counterparty_name'].map(cp_f).fillna(0) <= 3).astype(int)
+    except:
+        d['cp_rare'] = 0
+
     # Ховор данс-харилцагч хос
-    d['pair'] = d['account_code']+'|'+d['counterparty_name'].fillna('')
-    pf = d['pair'].value_counts()
-    d['pair_rare'] = (d['pair'].map(pf).fillna(0) <= 2).astype(int)
+    try:
+        d['pair'] = d['account_code'] + '|' + d['counterparty_name']
+        pf = d['pair'].value_counts()
+        d['pair_rare'] = (d['pair'].map(pf).fillna(0) <= 2).astype(int)
+    except:
+        d['pair_rare'] = 0
+
     # Тайлбар
-    d['desc_empty'] = (d['transaction_description'].fillna('').str.len()==0).astype(int)
+    d['desc_empty'] = (d['transaction_description'].str.len() == 0).astype(int)
+
     # Давхардал
-    d['dup_key'] = d['account_code']+'|'+d['amount'].astype(str)+'|'+d['transaction_date'].fillna('')
-    dk = d['dup_key'].value_counts()
-    d['is_dup'] = (d['dup_key'].map(dk).fillna(1) > 1).astype(int)
+    try:
+        d['dup_key'] = d['account_code'] + '|' + d['amount'].astype(str) + '|' + d['transaction_date']
+        dk = d['dup_key'].value_counts()
+        d['is_dup'] = (d['dup_key'].map(dk).fillna(1) > 1).astype(int)
+    except:
+        d['is_dup'] = 0
+
     # Цаг
-    d['day'] = pd.to_numeric(d['transaction_date'].astype(str).str[8:10], errors='coerce').fillna(15)
-    d['month_num'] = pd.to_numeric(d['transaction_date'].astype(str).str[5:7], errors='coerce').fillna(6)
-    d['is_month_end'] = (d['day']>=28).astype(int)
-    d['is_year_end'] = (d['month_num']==12).astype(int)
+    d['day'] = pd.to_numeric(d['transaction_date'].str[8:10], errors='coerce').fillna(15)
+    d['month_num'] = pd.to_numeric(d['transaction_date'].str[5:7], errors='coerce').fillna(6)
+    d['is_month_end'] = (d['day'] >= 28).astype(int)
+    d['is_year_end'] = (d['month_num'] == 12).astype(int)
+
     # ═══ ТАЙЛБАР ↔ ДАНСНЫ НЭР ТУЛГАЛТ ═══
-    stop_w = {'дансны','данс','нийт','бусад','зардал','орлого','төлбөр','хөрөнгө','тооцоо','бүртгэл','дүн','төгрөг','сая','мянга','журнал','гүйлгээ','баримт','тооцооны'}
-    def kw(text):
-        if not text: return set()
-        return set(w for w in re.findall(r'[а-яөүёА-ЯӨҮЁ\w]{3,}', str(text).lower()) if w not in stop_w)
-    acct_words = {}
-    for code in d['account_code'].unique():
-        all_d = ' '.join(d.loc[d['account_code']==code, 'transaction_description'].fillna('').str.lower())
-        wc = Counter(re.findall(r'[а-яөүёА-ЯӨҮЁ\w]{3,}', all_d))
-        acct_words[code] = set(w for w,c in wc.items() if c>=3 and len(w)>=3)
-    def desc_mismatch(row):
-        c, tx = row['account_code'], str(row['transaction_description']).lower() if row['transaction_description'] else ''
-        if not tx or c not in acct_words or not acct_words[c]: return 0
-        return 0 if len(set(re.findall(r'[а-яөүёА-ЯӨҮЁ\w]{3,}', tx)) & acct_words[c]) > 0 else 1
-    d['desc_mismatch'] = d.apply(desc_mismatch, axis=1)
-    def name_overlap(row):
-        nk, dk2 = kw(row['account_name']), kw(row['transaction_description'])
-        if not nk or not dk2: return 0
-        return len(nk & dk2) / max(len(nk),1)
-    d['name_desc_overlap'] = d.apply(name_overlap, axis=1)
-    d['name_no_overlap'] = (d['name_desc_overlap']==0).astype(int)
-    # Дансны чиглэл зөрчил
-    af2 = d['account_code'].astype(str).str[0]
+    d['desc_mismatch'] = 0
+    d['name_no_overlap'] = 0
     d['dir_mismatch'] = 0
-    d.loc[(af2=='1')&(d['credit_mnt']>0)&(d['debit_mnt']==0),'dir_mismatch'] = 1
-    d.loc[(af2=='2')&(d['debit_mnt']>0)&(d['credit_mnt']==0),'dir_mismatch'] = 1
-    d.loc[(af2=='5')&(d['debit_mnt']>0)&(d['credit_mnt']==0),'dir_mismatch'] = 1
-    d.loc[(af2.isin(['6','7','8']))&(d['credit_mnt']>0)&(d['debit_mnt']==0),'dir_mismatch'] = 1
+    try:
+        stop_w = {'дансны','данс','нийт','бусад','зардал','орлого','төлбөр','хөрөнгө','тооцоо','бүртгэл','дүн','төгрөг','сая','мянга','журнал','гүйлгээ','баримт'}
+        # Данс бүрийн ердийн тайлбарын үгс
+        acct_words = {}
+        for code in d['account_code'].unique():
+            all_desc = ' '.join(d.loc[d['account_code']==code, 'transaction_description'].str.lower())
+            wc = Counter(re.findall(r'[а-яөүёА-ЯӨҮЁ\w]{3,}', all_desc))
+            acct_words[code] = set(w for w,c in wc.items() if c >= 3 and len(w) >= 3)
+
+        # Vectorized desc_mismatch
+        def _check_mismatch(code, tx_desc):
+            tx = str(tx_desc).lower() if tx_desc else ''
+            if not tx or code not in acct_words or not acct_words[code]: return 0
+            tx_words = set(re.findall(r'[а-яөүёА-ЯӨҮЁ\w]{3,}', tx))
+            return 0 if len(tx_words & acct_words[code]) > 0 else 1
+        d['desc_mismatch'] = [_check_mismatch(c, t) for c, t in zip(d['account_code'], d['transaction_description'])]
+
+        # Vectorized name_no_overlap
+        def _extract_kw(text):
+            if not text: return set()
+            return set(w for w in re.findall(r'[а-яөүёА-ЯӨҮЁ\w]{3,}', str(text).lower()) if w not in stop_w and len(w) >= 3)
+        def _check_overlap(aname, tdesc):
+            nk = _extract_kw(aname)
+            dk2 = _extract_kw(tdesc)
+            if not nk or not dk2: return 0
+            return 0 if len(nk & dk2) > 0 else 1
+        d['name_no_overlap'] = [_check_overlap(a, t) for a, t in zip(d['account_name'], d['transaction_description'])]
+    except:
+        pass
+
+    # Дансны чиглэл зөрчил
+    try:
+        af2 = d['account_code'].str[0]
+        d.loc[(af2=='1')&(d['credit_mnt']>0)&(d['debit_mnt']==0), 'dir_mismatch'] = 1
+        d.loc[(af2=='2')&(d['debit_mnt']>0)&(d['credit_mnt']==0), 'dir_mismatch'] = 1
+        d.loc[(af2=='5')&(d['debit_mnt']>0)&(d['credit_mnt']==0), 'dir_mismatch'] = 1
+        d.loc[(af2.isin(['6','7','8']))&(d['credit_mnt']>0)&(d['debit_mnt']==0), 'dir_mismatch'] = 1
+    except:
+        pass
+
     return d
 
 def run_txn_anomaly(df, cont=0.05):
     """Гүйлгээний аномали илрүүлэлт."""
     feats = ['log_amount','acct_cat_num','benford_dev','is_round','amt_zscore','cp_rare','pair_rare',
              'desc_empty','is_month_end','is_year_end','is_dup','is_debit','desc_mismatch','name_no_overlap','dir_mismatch']
-    X = df[feats].fillna(0).replace([np.inf,-np.inf], 0)
-    iso = IsolationForest(contamination=cont, random_state=42, n_estimators=200, n_jobs=-1)
+    # Бүх feature багана байгаа эсэхийг шалгах
+    for f in feats:
+        if f not in df.columns:
+            df[f] = 0
+    X = df[feats].fillna(0).replace([np.inf,-np.inf], 0).astype(float)
+    iso = IsolationForest(contamination=cont, random_state=42, n_estimators=200, n_jobs=1)
+    iso.fit(X)
     df['txn_anomaly'] = (iso.predict(X)==-1).astype(int)
     df['txn_score'] = -iso.decision_function(X)
-    z = np.abs(StandardScaler().fit_transform(X))
-    df['txn_zscore_flag'] = (z.max(axis=1)>2.5).astype(int)
+    try:
+        z = np.abs(StandardScaler().fit_transform(X))
+        df['txn_zscore_flag'] = (z.max(axis=1)>2.5).astype(int)
+    except:
+        df['txn_zscore_flag'] = 0
     df['txn_risk'] = (df['txn_anomaly']*3 + df['txn_zscore_flag']*2 + df['is_dup']*2 + df['cp_rare'] +
         df['pair_rare'] + (df['amt_zscore'].abs()>3).astype(int)*2 + df['desc_empty'] +
         df['desc_mismatch']*2 + df['name_no_overlap'] + df['dir_mismatch']*2)
@@ -763,6 +817,10 @@ elif page.startswith("2"):
                     led_wrap = io.BytesIO(csv_bytes)
                     led_wrap.name = f"prototype_ledger_{d['year']}.csv"
                     led_files.append(led_wrap)
+                    # ЕДТ DataFrame-ийг шууд хадгалах (гүйлгээний шинжилгээнд ашиглана)
+                    if 'edt_frames' not in st.session_state:
+                        st.session_state['edt_frames'] = []
+                    st.session_state['edt_frames'].append(df_edt)
                     p1_buf, _, _, _, _ = generate_part1(df_edt, d['year'])
                     p1_buf.seek(0)
                     p1_wrap = io.BytesIO(p1_buf.getvalue())
@@ -771,11 +829,11 @@ elif page.startswith("2"):
                     st.success(f"✅ {d['name']} → Ledger ({cnt:,} гүйлгээ) + Part1 хөрвүүлсэн")
 
         if tb_files and led_files:
-            st.success(f"🎯 Шинжилгээнд бэлэн: TB {len(tb_files)} | Ledger {len(led_files)} | Part1 {len(p1_files)}")
+            st.success(f"🎯 Бүрэн шинжилгээнд бэлэн: TB {len(tb_files)} | Ledger {len(led_files)} | Part1 {len(p1_files)}")
+        elif led_files and not tb_files:
+            st.success(f"🎯 Гүйлгээний шинжилгээнд бэлэн: Ledger {len(led_files)} файл (TB нэмбэл дансны шинжилгээ ч ажиллана)")
         elif tb_files and not led_files:
             st.info("👆 Ledger (.csv/.gz) эсвэл ЕДТ (.xlsx) файл нэмнэ үү")
-        elif led_files and not tb_files:
-            st.info("👆 TB (.xlsx) эсвэл ГҮЙЛГЭЭ_БАЛАНС (.xlsx) файл нэмнэ үү")
         elif not tb_files and not led_files and not need_convert:
             st.info("👆 TB + Ledger файлуудаа оруулна уу")
 
@@ -798,30 +856,52 @@ elif page.startswith("2"):
                  "200 = тэнцвэртэй (анхдагч). "
                  "500 = удаан, өндөр нарийвчлал.")
 
-    if st.button("🚀 Шинжилгээ", type="primary", use_container_width=True) and tb_files and led_files:
-        with st.spinner("TB уншиж байна..."):
-            tb_all, tb_st = load_tb(tb_files)
-        with st.spinner("Ledger уншиж байна..."):
-            led_st = load_ledger_stats(led_files)
-        rm_all = pd.DataFrame()
-        mo_all = pd.DataFrame()
-        if p1_files:
-            with st.spinner("Part1 уншиж байна..."):
-                rm_all, mo_all = load_part1(p1_files)
-        with st.spinner("🤖 Дансны түвшний шинжилгээ..."):
-            df, X, y, feats, res, best, fi, ym = run_ml(tb_all, cont, nest)
-        # Гүйлгээний түвшний шинжилгээ
+    has_any = tb_files or led_files
+    if st.button("🚀 Шинжилгээ", type="primary", use_container_width=True) and has_any:
+        # Дансны түвшний шинжилгээ (TB + Ledger хоёулаа байвал)
+        df = pd.DataFrame(); X = np.array([]); y = np.array([]); feats = []
+        res = {}; best = ''; fi = pd.DataFrame(); ym = np.array([])
+        tb_st = {}; led_st = {}; ledger_full = pd.DataFrame()
+        rm_all = pd.DataFrame(); mo_all = pd.DataFrame()
+
+        if tb_files and led_files:
+            with st.spinner("TB уншиж байна..."):
+                tb_all, tb_st = load_tb(tb_files)
+            with st.spinner("Ledger уншиж байна..."):
+                led_st, ledger_full = load_ledger_stats(led_files)
+            if p1_files:
+                with st.spinner("Part1 уншиж байна..."):
+                    rm_all, mo_all = load_part1(p1_files)
+            with st.spinner("🤖 Дансны түвшний шинжилгээ..."):
+                df, X, y, feats, res, best, fi, ym = run_ml(tb_all, cont, nest)
+        elif led_files:
+            # Зөвхөн Ledger байвал — stats + full уншна
+            with st.spinner("Ledger уншиж байна..."):
+                led_st, ledger_full = load_ledger_stats(led_files)
+            if p1_files:
+                with st.spinner("Part1 уншиж байна..."):
+                    rm_all, mo_all = load_part1(p1_files)
+
+        # Гүйлгээний түвшний шинжилгээ (Ledger эсвэл ЕДТ байвал)
         txn_result = pd.DataFrame()
-        with st.spinner("🔍 Гүйлгээний түвшний шинжилгээ..."):
-            try:
-                txn_all = load_ledger_full(led_files)
-                if len(txn_all) > 0:
-                    sample_n = min(len(txn_all), 200000)
-                    txn_s = txn_all.sample(n=sample_n, random_state=42) if len(txn_all) > sample_n else txn_all
+        # ЕДТ-ээс шууд хадгалсан DataFrame-үүдийг нэгтгэх
+        edt_frames = st.session_state.get('edt_frames', [])
+        all_txn_frames = []
+        if len(ledger_full) > 0:
+            all_txn_frames.append(ledger_full)
+        elif edt_frames:
+            all_txn_frames.extend(edt_frames)
+
+        if all_txn_frames:
+            txn_combined = pd.concat(all_txn_frames, ignore_index=True)
+            with st.spinner(f"🔍 Гүйлгээний түвшний шинжилгээ ({len(txn_combined):,} гүйлгээ)..."):
+                try:
+                    sample_n = min(len(txn_combined), 50000)
+                    txn_s = txn_combined.sample(n=sample_n, random_state=42) if len(txn_combined) > sample_n else txn_combined.copy()
                     txn_s = engineer_txn_features(txn_s)
                     txn_result, _ = run_txn_anomaly(txn_s, cont)
-            except Exception as e:
-                st.warning(f"⚠️ Гүйлгээний шинжилгээ алдаа: {e}")
+                except Exception as e:
+                    st.warning(f"⚠️ Гүйлгээний шинжилгээ алдаа: {e}")
         # Store all results in session_state
         st.session_state['analysis_done'] = True
         st.session_state['df'] = df
@@ -854,12 +934,19 @@ elif page.startswith("2"):
         mo_all = st.session_state['mo_all']
         txn_result = st.session_state.get('txn_result', pd.DataFrame())
 
-        st.success(f"✅ {len(df):,} данс, {sum(d['rows'] for d in led_st.values()):,} гүйлгээ")
-        yrs = sorted(tb_st.keys())
-        bp = res[best]['pred']
+        has_account = len(df) > 0 and len(res) > 0
         has_rm = len(rm_all) > 0
         has_mo = len(mo_all) > 0
         has_txn = len(txn_result) > 0
+        n_led = sum(d['rows'] for d in led_st.values()) if led_st else (len(txn_result) if has_txn else 0)
+
+        if has_account:
+            st.success(f"✅ {len(df):,} данс, {n_led:,} гүйлгээ шинжлэгдсэн")
+        elif has_txn:
+            st.success(f"✅ {n_led:,} гүйлгээ шинжлэгдсэн (гүйлгээний түвшний шинжилгээ)")
+        
+        yrs = sorted(tb_st.keys()) if tb_st else []
+        bp = res[best]['pred'] if has_account and best else np.array([])
 
         tab_names = ["📊 Нэгтгэл", "🔍 Хэвийн бус данс", "⚖️ ХОУ ↔ Уламжлалт", "🧠 Тайлбарлагдах ХОУ", "📋 Жагсаалт"]
         if has_txn:
@@ -869,35 +956,38 @@ elif page.startswith("2"):
             tab_names.append("🎯 Эрсдэлийн матриц")
         if has_mo:
             tab_names.append("📈 Сарын хандлага")
+
         all_tabs = st.tabs(tab_names)
 
         with all_tabs[0]:
-            td.show_summary_description(
-                n_accounts=len(df),
-                n_transactions=sum(d['rows'] for d in led_st.values()),
-                n_risk_pairs=len(rm_all) if has_rm else 0
-            )
-            m1, m2, m3, m4 = st.columns(4)
-            m1.metric("Данс", f"{len(df):,}")
-            m2.metric("Гүйлгээ", f"{sum(d['rows'] for d in led_st.values()):,}")
-            m3.metric("Аномали", f"{df['ensemble_anomaly'].sum():,} ({df['ensemble_anomaly'].mean()*100:.1f}%)")
-            m4.metric("Шилдэг", f"{best} F1={res[best]['f1']:.4f}")
-            if has_rm:
-                mr1, mr2 = st.columns(2)
-                mr1.metric("Эрсдэлийн хос", f"{len(rm_all):,}")
-                mr2.metric("Эрсдэлтэй (score>0)", f"{len(rm_all[rm_all['risk_score']>0]):,}")
-            fg = make_subplots(rows=1, cols=3, subplot_titles=("Данс", "Эргэлт (T₮)", "ЕДТ мөр"))
-            cl3 = ['#2196F3', '#4CAF50', '#FF9800']
-            for i, yv in enumerate(yrs):
-                fg.add_trace(go.Bar(x=[str(yv)], y=[tb_st[yv]['accounts']], marker_color=cl3[i % 3], showlegend=False), row=1, col=1)
-                fg.add_trace(go.Bar(x=[str(yv)], y=[tb_st[yv]['turnover_d'] / 1e9], marker_color=cl3[i % 3], showlegend=False), row=1, col=2)
-                if yv in led_st:
-                    fg.add_trace(go.Bar(x=[str(yv)], y=[led_st[yv]['rows']], marker_color=cl3[i % 3], showlegend=False), row=1, col=3)
-            fg.update_layout(height=350)
-            st.plotly_chart(fg, use_container_width=True)
-            td.show_summary_interpretation()
+            if not has_account:
+                st.info("📊 TB + Ledger файлуудыг оруулахад дансны түвшний шинжилгээ идэвхжинэ. ЕДТ файлаар зөвхөн гүйлгээний шинжилгээ ажиллана.")
+            else:
+                td.show_summary_description(n_accounts=len(df), n_transactions=n_led, n_risk_pairs=len(rm_all) if has_rm else 0)
+                m1, m2, m3, m4 = st.columns(4)
+                m1.metric("Данс", f"{len(df):,}")
+                m2.metric("Гүйлгээ", f"{sum(d['rows'] for d in led_st.values()):,}")
+                m3.metric("Аномали", f"{df['ensemble_anomaly'].sum():,} ({df['ensemble_anomaly'].mean()*100:.1f}%)")
+                m4.metric("Шилдэг", f"{best} F1={res[best]['f1']:.4f}")
+                if has_rm:
+                    mr1, mr2 = st.columns(2)
+                    mr1.metric("Эрсдэлийн хос", f"{len(rm_all):,}")
+                    mr2.metric("Эрсдэлтэй (score>0)", f"{len(rm_all[rm_all['risk_score']>0]):,}")
+                fg = make_subplots(rows=1, cols=3, subplot_titles=("Данс", "Эргэлт (T₮)", "ЕДТ мөр"))
+                cl3 = ['#2196F3', '#4CAF50', '#FF9800']
+                for i, yv in enumerate(yrs):
+                    fg.add_trace(go.Bar(x=[str(yv)], y=[tb_st[yv]['accounts']], marker_color=cl3[i % 3], showlegend=False), row=1, col=1)
+                    fg.add_trace(go.Bar(x=[str(yv)], y=[tb_st[yv]['turnover_d'] / 1e9], marker_color=cl3[i % 3], showlegend=False), row=1, col=2)
+                    if yv in led_st:
+                        fg.add_trace(go.Bar(x=[str(yv)], y=[led_st[yv]['rows']], marker_color=cl3[i % 3], showlegend=False), row=1, col=3)
+                fg.update_layout(height=350)
+                st.plotly_chart(fg, use_container_width=True)
+                td.show_summary_interpretation()
 
         with all_tabs[1]:
+          if not has_account:
+            st.info("TB + Ledger файл шаардлагатай")
+          else:
             td.show_anomaly_description()
             mt = {'Isolation Forest': 'iso_anomaly', 'Z-score': 'zscore_anomaly', 'Turn ratio': 'turn_anomaly', 'ENSEMBLE': 'ensemble_anomaly'}
             ad = []
@@ -919,6 +1009,9 @@ elif page.startswith("2"):
             )
 
         with all_tabs[2]:
+          if not has_account:
+            st.info("TB + Ledger файл шаардлагатай")
+          else:
             td.show_ai_vs_mus_description()
             st.dataframe(pd.DataFrame([{'Загвар': n, 'Precision': f"{r['precision']:.4f}", 'Recall': f"{r['recall']:.4f}", 'F1': f"{r['f1']:.4f}", 'AUC': f"{r['auc']:.4f}"} for n, r in res.items()]), use_container_width=True, hide_index=True)
             fg2 = go.Figure()
@@ -951,6 +1044,9 @@ elif page.startswith("2"):
             )
 
         with all_tabs[3]:
+          if not has_account:
+            st.info("TB + Ledger файл шаардлагатай")
+          else:
             td.show_xai_description()
             st.plotly_chart(px.bar(fi, x='importance', y='feature', orientation='h', color='importance', color_continuous_scale='Blues', title='Feature Importance').update_layout(height=400, yaxis={'categoryorder': 'total ascending'}), use_container_width=True)
             fi_dict = dict(zip(fi['feature'], fi['importance']))
@@ -958,6 +1054,9 @@ elif page.startswith("2"):
             td.show_xai_interpretation()
 
         with all_tabs[4]:
+          if not has_account:
+            st.info("TB + Ledger файл шаардлагатай")
+          else:
             td.show_list_description()
             adf = df[df['ensemble_anomaly'] == 1][['year', 'account_code', 'account_name', 'turnover_debit', 'turnover_credit', 'turn_ratio', 'log_abs_change']].copy()
             yf = st.selectbox("Жил", ['Бүгд'] + [str(y2) for y2 in yrs])
@@ -1124,5 +1223,5 @@ elif page.startswith("2"):
 
         td.show_dashboard_footer()
 
-    if not st.session_state.get('analysis_done', False) and (not tb_files or not led_files):
-        st.info("👆 TB + Ledger upload хийнэ. Part1 нэмбэл эрсдэлийн матриц + сарын trend нэмэгдэнэ.")
+    if not st.session_state.get('analysis_done', False) and not has_any:
+        st.info("👆 Файлуудаа оруулна уу. TB + Ledger = бүрэн шинжилгээ. ЕДТ = гүйлгээний шинжилгээ.")
