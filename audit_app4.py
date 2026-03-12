@@ -1,6 +1,6 @@
 """
 АУДИТЫН ХОУ ПРОТОТИП v3.4
-TB + Ledger + Part1 → Бүрэн шинжилгээ
+Гүйлгээ-баланс (TB) + Ерөнхий дэвтэр (Ledger) + Эрсдэлийн нэгтгэл (Part1) → Бүрэн шинжилгээ
 pip install streamlit pandas numpy scikit-learn plotly openpyxl
 streamlit run audit_app.py
 """
@@ -22,8 +22,20 @@ warnings.filterwarnings('ignore')
 from tab_descriptions import TabDescriptions
 td = TabDescriptions()
 st.set_page_config(page_title="Аудитын ХОУ v3.4", page_icon="🔍", layout="wide")
-st.markdown('<h1 style="text-align:center;color:#1565c0">🔍 Аудитын ХОУ Прототип v3.4</h1>', unsafe_allow_html=True)
-st.markdown('<p style="text-align:center;color:#666">TB + Ledger + Part1 → Бүрэн шинжилгээ</p>', unsafe_allow_html=True)
+st.markdown('<h1 style="text-align:center;color:#1565c0">🔍 Аудитын хиймэл оюуны прототип v3.4</h1>', unsafe_allow_html=True)
+st.markdown('<p style="text-align:center;color:#666">Гүйлгээ-баланс (TB) + Ерөнхий дэвтэр (Ledger) + Эрсдэлийн нэгтгэл (Part1) → Бүрэн шинжилгээ</p>', unsafe_allow_html=True)
+with st.expander("📖 Нэр томъёоны товч тайлбар", expanded=False):
+    st.markdown("""
+- **TB (Trial Balance / Гүйлгээ-баланс):** тайлант хугацааны эхний үлдэгдэл, эргэлт, эцсийн үлдэгдлийг нэгтгэсэн хүснэгт.
+- **Ledger (Ерөнхий дэвтэр):** данс бүрийн дэлгэрэнгүй гүйлгээний бүртгэл.
+- **Part1 (Эрсдэлийн нэгтгэл):** сарын нэгтгэл, дансны нэгтгэл, эрсдэлийн матрицыг агуулсан туслах файл.
+- **AI / ХОУ:** хиймэл оюун ухаан.
+- **ML / Машин сургалт:** өгөгдлөөс хэв маяг сурч, ангилах эсвэл таамаглах арга.
+- **XAI:** тайлбарлагдах хиймэл оюун; загвар яагаад ийм дүгнэлт хийснийг тайлбарлана.
+- **MUS:** мөнгөний нэгжид суурилсан түүвэрлэлтийн уламжлалт аудитын арга.
+- **ROC/AUC:** загварын ялгах чадварыг хэмжих үзүүлэлтүүд.
+""")
+
 
 with st.sidebar:
     st.header("📌 Цэс")
@@ -472,7 +484,7 @@ def run_txn_anomaly(df, cont=0.05):
         if f not in df.columns:
             df[f] = 0
     X = df[feats].fillna(0).replace([np.inf,-np.inf], 0).astype(float)
-    iso = IsolationForest(contamination=cont, random_state=42, n_estimators=200, n_jobs=1)
+    iso = IsolationForest(contamination (аномалийн хувь)=cont, random_state=42, n_estimators (модны тоо)=200, n_jobs=1)
     df['txn_anomaly'] = (iso.fit_predict(X)==-1).astype(int)
     df['txn_score'] = -iso.score_samples(X)
     try:
@@ -503,7 +515,7 @@ def run_ml(tb_all, cont, n_est):
         df['log_abs_change'] = np.log1p((df['closing_debit'] - df['opening_debit']).abs())
     feats = ['cat_num', 'log_turn_d', 'log_turn_c', 'log_close_d', 'log_close_c', 'turn_ratio', 'log_abs_change', 'year']
     X = df[feats].fillna(0).replace([np.inf, -np.inf], 0)
-    iso = IsolationForest(contamination=cont, random_state=42, n_estimators=200)
+    iso = IsolationForest(contamination (аномалийн хувь)=cont, random_state=42, n_estimators (модны тоо)=200)
     df['iso_anomaly'] = (iso.fit_predict(X) == -1).astype(int)
     sc = StandardScaler()
     df['zscore_anomaly'] = (np.abs(sc.fit_transform(X)).max(axis=1) > 2.0).astype(int)
@@ -513,9 +525,9 @@ def run_ml(tb_all, cont, n_est):
     y = df['ensemble_anomaly'].values
     cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
     models = {
-        'Random Forest': RandomForestClassifier(n_estimators=n_est, max_depth=10, random_state=42, class_weight='balanced'),
-        'Gradient Boosting': GradientBoostingClassifier(n_estimators=150, max_depth=5, learning_rate=0.1, random_state=42),
-        'Logistic Regression': LogisticRegression(max_iter=1000, random_state=42, class_weight='balanced'),
+        'Random Forest (санамсаргүй ой)': RandomForestClassifier(n_estimators (модны тоо)=n_est, max_depth=10, random_state=42, class_weight='balanced'),
+        'Gradient Boosting (градиент нэмэгдүүлэлт)': GradientBoostingClassifier(n_estimators (модны тоо)=150, max_depth=5, learning_rate=0.1, random_state=42),
+        'Logistic Regression (логистик регресс)': LogisticRegression(max_iter=1000, random_state=42, class_weight='balanced'),
     }
     res = {}
     for nm, mdl in models.items():
@@ -523,7 +535,7 @@ def run_ml(tb_all, cont, n_est):
         ypr = cross_val_predict(mdl, X, y, cv=cv, method='predict_proba')[:, 1]
         res[nm] = {'pred': yp, 'prob': ypr, 'precision': precision_score(y, yp), 'recall': recall_score(y, yp), 'f1': f1_score(y, yp), 'auc': roc_auc_score(y, ypr)}
     best = max(res, key=lambda k: res[k]['f1'])
-    rf = models['Random Forest']
+    rf = models['Random Forest (санамсаргүй ой)']
     rf.fit(X, y)
     fi = pd.DataFrame({'feature': feats, 'importance': rf.feature_importances_}).sort_values('importance', ascending=False)
     nt = len(df)
@@ -645,10 +657,10 @@ def detect_file_type(f):
 
 FILE_TYPE_LABELS = {
     'raw_tb': ('📗 ГҮЙЛГЭЭ_БАЛАНС', 'Гүйлгээ-балансын түүхий файл → TB болгон хөрвүүлнэ'),
-    'edt': ('📘 ЕДТ', 'Ерөнхий дэвтрийн тайлан → Ledger + Part1 болгон хөрвүүлнэ'),
-    'tb_std': ('📊 TB_standardized', 'Стандартчилсан гүйлгээ-баланс → Шинжилгээнд бэлэн'),
-    'ledger': ('📄 Ledger CSV/GZ', 'Ерөнхий дэвтрийн гүйлгээ → Шинжилгээнд бэлэн'),
-    'part1': ('📈 Part1', 'Сарын нэгтгэл + Эрсдэлийн матриц → Шинжилгээнд бэлэн'),
+    'edt': ('📘 Ерөнхий дэвтэр / ерөнхий журнал (ЕДТ)', 'Ерөнхий дэвтрийн тайлан → Ledger + Part1 болгон хөрвүүлнэ'),
+    'tb_std': ('📊 Стандартчилсан гүйлгээ-баланс (TB_standardized)', 'Стандартчилсан гүйлгээ-баланс → Шинжилгээнд бэлэн'),
+    'ledger': ('📄 Ерөнхий дэвтрийн гүйлгээний файл (Ledger CSV/GZ)', 'Ерөнхий дэвтрийн гүйлгээ → Шинжилгээнд бэлэн'),
+    'part1': ('📈 Эрсдэлийн нэгтгэл файл (Part1)', 'Сарын нэгтгэл + Эрсдэлийн матриц → Шинжилгээнд бэлэн'),
     'unknown': ('❓ Тодорхойгүй', 'Файлын төрлийг таних боломжгүй'),
 }
 if page.startswith("1"):
@@ -706,7 +718,7 @@ if page.startswith("1"):
                     for d in edts:
                         edt_by_year.setdefault(d['year'], []).append(d['file'])
                     for yr in sorted(edt_by_year):
-                        with st.spinner(f"📘 ЕДТ {yr} хөрвүүлж байна ({len(edt_by_year[yr])} файл)..."):
+                        with st.spinner(f"📘 Ерөнхий дэвтэр / ерөнхий журнал (ЕДТ) {yr} хөрвүүлж байна ({len(edt_by_year[yr])} файл)..."):
                             frames = []
                             for f in edt_by_year[yr]:
                                 f.seek(0)
@@ -848,14 +860,14 @@ elif page.startswith("2"):
     """, unsafe_allow_html=True)
     c1s, c2s = st.columns(2)
     with c1s:
-        cont = st.slider("🎯 IF contamination — Тусгаарлалтын ойн хэвийн бус хувь", 0.05, 0.20, 0.10, 0.01,
-            help="Isolation Forest (Тусгаарлалтын ой) алгоритм нийт дансны хэдэн хувийг хэвийн бус гэж үзэх. "
+        cont = st.slider("🎯 IF contamination (аномалийн хувь) — Тусгаарлалтын ойн хэвийн бус хувь", 0.05, 0.20, 0.10, 0.01,
+            help="Isolation Forest (тусгаарлалтын ой) (Тусгаарлалтын ой) алгоритм нийт дансны хэдэн хувийг хэвийн бус гэж үзэх. "
                  "0.05 (5%) = зөвхөн хамгийн сэжигтэй 5%. "
                  "0.10 (10%) = 10% илрүүлнэ (анхдагч). "
                  "0.20 (20%) = илүү өргөн хүрээтэй шалгана.")
     with c2s:
-        nest = st.slider("🌲 RF n_estimators — Санамсаргүй ойн модны тоо", 50, 500, 200, 50,
-            help="Random Forest (Санамсаргүй ой) загварын модны тоо. "
+        nest = st.slider("🌲 RF n_estimators (модны тоо) — Санамсаргүй ойн модны тоо", 50, 500, 200, 50,
+            help="Random Forest (санамсаргүй ой) (Санамсаргүй ой) загварын модны тоо. "
                  "50 = хурдан, бага нарийвчлал. "
                  "200 = тэнцвэртэй (анхдагч). "
                  "500 = удаан, өндөр нарийвчлал.")
@@ -1013,7 +1025,7 @@ elif page.startswith("2"):
             st.info("TB + Ledger файл шаардлагатай")
           else:
             td.show_anomaly_description()
-            mt = {'Isolation Forest': 'iso_anomaly', 'Z-score': 'zscore_anomaly', 'Turn ratio': 'turn_anomaly', 'ENSEMBLE': 'ensemble_anomaly'}
+            mt = {'Isolation Forest (тусгаарлалтын ой)': 'iso_anomaly', 'Z-score': 'zscore_anomaly', 'Turn ratio': 'turn_anomaly', 'ENSEMBLE': 'ensemble_anomaly'}
             ad = []
             for m, c in mt.items():
                 row_d = {'Арга': m, 'Нийт': int(df[c].sum())}
@@ -1037,13 +1049,13 @@ elif page.startswith("2"):
             st.info("TB + Ledger файл шаардлагатай")
           else:
             td.show_ai_vs_mus_description()
-            st.dataframe(pd.DataFrame([{'Загвар': n, 'Precision': f"{r['precision']:.4f}", 'Recall': f"{r['recall']:.4f}", 'F1': f"{r['f1']:.4f}", 'AUC': f"{r['auc']:.4f}"} for n, r in res.items()]), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame([{'Загвар': n, 'Precision': f"{r['precision']:.4f}", 'Recall': f"{r['recall']:.4f}", 'F1': f"{r['f1']:.4f}", 'AUC (муруйн доорх талбай)': f"{r['auc']:.4f}"} for n, r in res.items()]), use_container_width=True, hide_index=True)
             fg2 = go.Figure()
             for n, r in res.items():
                 fpr, tpr, _ = roc_curve(y, r['prob'])
-                fg2.add_trace(go.Scatter(x=fpr, y=tpr, name=f"{n} (AUC={r['auc']:.4f})"))
+                fg2.add_trace(go.Scatter(x=fpr, y=tpr, name=f"{n} (AUC (муруйн доорх талбай)={r['auc']:.4f})"))
             fg2.add_trace(go.Scatter(x=[0, 1], y=[0, 1], name='Random', line=dict(dash='dash', color='gray')))
-            fg2.update_layout(title='ROC Curve', height=400)
+            fg2.update_layout(title='ROC (үнэн-эерэг, худал-эерэгийн муруй) Curve', height=400)
             st.plotly_chart(fg2, use_container_width=True)
             st.subheader("Detection Risk")
             dr = []
@@ -1072,7 +1084,7 @@ elif page.startswith("2"):
             st.info("TB + Ledger файл шаардлагатай")
           else:
             td.show_xai_description()
-            st.plotly_chart(px.bar(fi, x='importance', y='feature', orientation='h', color='importance', color_continuous_scale='Blues', title='Feature Importance').update_layout(height=400, yaxis={'categoryorder': 'total ascending'}), use_container_width=True)
+            st.plotly_chart(px.bar(fi, x='importance', y='feature', orientation='h', color='importance', color_continuous_scale='Blues', title='Feature Importance (шинжийн ач холбогдол)').update_layout(height=400, yaxis={'categoryorder': 'total ascending'}), use_container_width=True)
             fi_dict = dict(zip(fi['feature'], fi['importance']))
             td.show_xai_feature_details(feature_importances=fi_dict)
             td.show_xai_interpretation()
@@ -1127,7 +1139,7 @@ elif page.startswith("2"):
 
 **Эрсдэлийн оноо:** 🟢 Бага (0-3) → 🟡 Дунд (4-7) → 🟠 Өндөр (8-12) → 🔴 Маш өндөр (13+)
 
-**IF-д орно** = Isolation Forest алгоритмд шууд шинж чанар болж ордог (тоон оноогүй ч нөлөөлнө)
+**IF-д орно** = Isolation Forest (тусгаарлалтын ой) алгоритмд шууд шинж чанар болж ордог (тоон оноогүй ч нөлөөлнө)
                     """)
 
                 n_txn_anom = txn_result['txn_anomaly'].sum()
