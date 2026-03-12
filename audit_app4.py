@@ -484,7 +484,7 @@ def run_txn_anomaly(df, cont=0.05):
         if f not in df.columns:
             df[f] = 0
     X = df[feats].fillna(0).replace([np.inf,-np.inf], 0).astype(float)
-    iso = IsolationForest(contamination (аномалийн хувь)=cont, random_state=42, n_estimators (модны тоо)=200, n_jobs=1)
+    iso = IsolationForest(contamination=cont, random_state=42, n_estimators=200, n_jobs=1)  # contamination=аномалийн хувь, n_estimators=модны тоо
     df['txn_anomaly'] = (iso.fit_predict(X)==-1).astype(int)
     df['txn_score'] = -iso.score_samples(X)
     try:
@@ -515,7 +515,7 @@ def run_ml(tb_all, cont, n_est):
         df['log_abs_change'] = np.log1p((df['closing_debit'] - df['opening_debit']).abs())
     feats = ['cat_num', 'log_turn_d', 'log_turn_c', 'log_close_d', 'log_close_c', 'turn_ratio', 'log_abs_change', 'year']
     X = df[feats].fillna(0).replace([np.inf, -np.inf], 0)
-    iso = IsolationForest(contamination (аномалийн хувь)=cont, random_state=42, n_estimators (модны тоо)=200)
+    iso = IsolationForest(contamination=cont, random_state=42, n_estimators=200)  # contamination=аномалийн хувь, n_estimators=модны тоо
     df['iso_anomaly'] = (iso.fit_predict(X) == -1).astype(int)
     sc = StandardScaler()
     df['zscore_anomaly'] = (np.abs(sc.fit_transform(X)).max(axis=1) > 2.0).astype(int)
@@ -525,8 +525,8 @@ def run_ml(tb_all, cont, n_est):
     y = df['ensemble_anomaly'].values
     cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
     models = {
-        'Random Forest (санамсаргүй ой)': RandomForestClassifier(n_estimators (модны тоо)=n_est, max_depth=10, random_state=42, class_weight='balanced'),
-        'Gradient Boosting (градиент нэмэгдүүлэлт)': GradientBoostingClassifier(n_estimators (модны тоо)=150, max_depth=5, learning_rate=0.1, random_state=42),
+        'Random Forest (санамсаргүй ой)': RandomForestClassifier(n_estimators=n_est, max_depth=10, random_state=42, class_weight='balanced'),
+        'Gradient Boosting (градиент нэмэгдүүлэлт)': GradientBoostingClassifier(n_estimators=150, max_depth=5, learning_rate=0.1, random_state=42),
         'Logistic Regression (логистик регресс)': LogisticRegression(max_iter=1000, random_state=42, class_weight='balanced'),
     }
     res = {}
