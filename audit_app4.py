@@ -1040,27 +1040,40 @@ def detect_file_type(f):
 
     name_check = fname_orig.lower().replace('_', ' ').replace('-', ' ')
     
-    # EDT keywords (expanded for multiple ERPs)
-    edt_keywords = ['ерөнхий журнал', 'ерөнхий дэвтэр', 'едт', 'edt', 'general ledger', 'general journal',
-                    'еренхий журнал', 'journal gc', 'journal entry', 'journal entries',
-                    'gl detail', 'gl transactions', 'проводки', 'журнал проводок',
-                    'sap fico', 'fb03', 'faglb03']
-    for kw in edt_keywords:
-        if kw in name_check:
-            return 'edt', year
+    # ⚠️ TB шалгалтыг EDT-ийн ӨМНӨ хийх (TB GC, TB MB гэх мэт файлуудыг зөв таних)
+    # TB_standardized
+    if 'tb_standardized' in name_check or 'tb standardized' in name_check:
+        return 'tb_std', year
     
-    tb_keywords = ['гүйлгээ баланс', 'гүйлгээ_баланс', 'trial balance', 'journal tb',
-                   'оборотно сальдовая', 'osv']
+    # ГҮЙЛГЭЭ_БАЛАНС / Trial Balance
+    tb_keywords = ['гүйлгээ баланс', 'гүйлгээ_баланс', 'гуйлгээ баланс', 'trial balance',
+                   'гүйлгэ баланс', 'гуйлгэ баланс', 'оборотно сальдовая', 'osv']
     for kw in tb_keywords:
         if kw in name_check:
             return 'raw_tb', year
     
-    if 'tb_standardized' in name_check or 'tb standardized' in name_check:
-        return 'tb_std', year
+    # TB + space/dot prefix (TB GC, TB MB, TB GCE гэх мэт)
+    # "Journal, TB" нь EDT, гэвч "TB " эхэлсэн бол raw_tb
+    tb_prefix = name_check.strip()
+    if (tb_prefix.startswith('tb ') or tb_prefix.startswith('tb.') or 
+        tb_prefix.startswith('tb_') or tb_prefix == 'tb'):
+        return 'raw_tb', year
+    
+    # Part1
     if 'part1' in name_check or 'part 1' in name_check:
         return 'part1', year
+    # Ledger
     if 'ledger' in name_check or 'prototype_ledger' in name_check:
         return 'ledger', year
+    
+    # EDT keywords (TB-ийн ДАРАА шалгана)
+    edt_keywords = ['ерөнхий журнал', 'ерөнхий дэвтэр', 'едт', 'edt', 'general ledger', 'general journal',
+                    'еренхий журнал', 'journal gc', 'journal entry', 'journal entries',
+                    'gl detail', 'gl transactions', 'проводки', 'журнал проводок',
+                    'sap fico', 'fb03', 'faglb03', 'journal']
+    for kw in edt_keywords:
+        if kw in name_check:
+            return 'edt', year
 
     # Sheet structure detection
     import openpyxl
@@ -1330,18 +1343,25 @@ if page.startswith("1"):
                         st.session_state.led_res = {}
                     edt_by_year = {}
                     for d in edts:
-                        edt_by_year.setdefault(d['year'], []).append(d['file'])
+                        edt_by_year.setdefault(d['year'], []).append(d)
                     for yr in sorted(edt_by_year):
                         status.text(f"📘 ЕДТ {yr} хөрвүүлж байна ({len(edt_by_year[yr])} файл)...")
                         frames = []
-                        for f in edt_by_year[yr]:
-                            f.seek(0)
-                            df_e, cnt_e = process_edt(f, yr)
+                        failed_files = []
+                        for d in edt_by_year[yr]:
+                            d['file'].seek(0)
+                            df_e, cnt_e = process_edt(d['file'], yr)
                             if cnt_e > 0:
                                 frames.append(df_e)
+                                st.success(f"  ✅ {d['name']}: {cnt_e:,} гүйлгээ")
+                            else:
+                                failed_files.append(d['name'])
+                                st.warning(f"  ⚠️ {d['name']}: 0 гүйлгээ уншигдсан — ЕДТ формат биш байж магадгүй. Энэ файл ГҮЙЛГЭЭ_БАЛАНС (TB) формат байвал нэрийг нь \"TB_\" эхлүүлж өөрчилнө үү.")
                         if frames:
                             st.session_state.led_res[yr] = pd.concat(frames, ignore_index=True)
-                            st.success(f"✅ ЕДТ {yr}: {len(st.session_state.led_res[yr]):,} гүйлгээ")
+                            st.success(f"✅ ЕДТ {yr}: Нийт {len(st.session_state.led_res[yr]):,} гүйлгээ ({len(frames)} файлаас)")
+                        elif failed_files:
+                            st.error(f"❌ {yr} оны бүх ЕДТ файл(ууд) уншигдсангүй: {', '.join(failed_files)}")
                         done += 1
                         progress.progress(done / total_files)
                 
