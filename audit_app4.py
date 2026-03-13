@@ -27,7 +27,7 @@ st.markdown('<p style="text-align:center;color:#666;font-size:14px">Гүйлгэ
 
 with st.sidebar:
     st.header("📌 Системийн цэс")
-    page = st.radio("Үндсэн цэс:", ["1️⃣ Өгөгдөл оруулах", "2️⃣ Эрсдэлийн шинжилгээ", "3️⃣ Материаллаг байдлын тооцоо"])
+    page = st.radio("Үндсэн цэс:", ["1️⃣ Өгөгдөл оруулах, бэлтгэх", "2️⃣ Эрсдэлийн шинжилгээ", "3️⃣ Материаллаг байдлын тооцоо"])
 
 ACCT_RE_B = re.compile(r'Данс:\s*\[([^\]]+)\]\s*(.*)')
 ACCT_RE_P = re.compile(r'Данс:\s*(\d{3}-\d{2}-\d{2}-\d{3})\s+(.*)')
@@ -996,7 +996,7 @@ if page.startswith("1"):
     <div style="background-color: #E3F2FD; padding: 15px; border-radius: 8px; border-left: 4px solid #1565C0; margin-bottom: 15px;">
         <b>📂 Ямар ч файлыг оруулаарай!</b> Систем автоматаар таниж, зөв формат руу хөрвүүлнэ.<br>
         <span style="color: #555; font-size: 13px;">
-        Дэмжих файлууд: ГҮЙЛГЭЭ_БАЛАНС (.xlsx), Ерөнхий журнал (.xlsx) — хэдэн ч файл, ямар ч дараалал
+        Дэмжих файлууд: Гүйлгээ баланс (.xlsx), Ерөнхий журнал (.xlsx) — хэдэн ч файл, ямар ч дараалал
         </span>
     </div>
     """, unsafe_allow_html=True)
@@ -1033,7 +1033,7 @@ if page.startswith("1"):
                     if 'tb_res' not in st.session_state:
                         st.session_state.tb_res = {}
                     for d in raw_tbs:
-                        with st.spinner(f"📗 ГҮЙЛГЭЭ_БАЛАНС {d['year']} хөрвүүлж байна..."):
+                        with st.spinner(f"📗 Гүйлгаа баланс {d['year']} хөрвүүлж байна..."):
                             d['file'].seek(0)
                             buf, tb_s = process_raw_tb(d['file'])
                             if tb_s is not None and not tb_s.empty:
@@ -1096,7 +1096,7 @@ elif page.startswith("2"):
     <div style="background-color: #E8F5E9; padding: 15px; border-radius: 8px; border-left: 4px solid #2E7D32; margin-bottom: 15px;">
         <b>📂 Бүх файлаа нэг дор оруулна уу.</b> Систем автоматаар формат таниж, стандарт хэлбэр рүү хөрвүүлж, шинжилгээг ажиллуулна.<br>
         <span style="color: #555; font-size: 13px;">
-        ГҮЙЛГЭЭ_БАЛАНС, Ерөнхий журнал, TB, Ledger, Нэгтгэл — бүгдийг нь оруулаад болно. Систем өөрөө ялгана.
+        Гүйлгаа баланс, Ерөнхий журнал, TB, Ledger, Нэгтгэл — бүгдийг нь оруулаад болно. Систем өөрөө ялгана.
         </span>
     </div>
     """, unsafe_allow_html=True)
@@ -1127,7 +1127,7 @@ elif page.startswith("2"):
         need_convert = len(raw_tbs) > 0 or len(edts) > 0
 
         if need_convert:
-            st.info(f"🔄 **{len(raw_tbs)} ГҮЙЛГЭЭ_БАЛАНС + {len(edts)} ЕЖ** файл автоматаар хөрвүүлэгдэнэ.")
+            st.info(f"🔄 **{len(raw_tbs)} Гүйлгээ баланс + {len(edts)} ЕЖ** файл автоматаар хөрвүүлэгдэнэ.")
 
         for d in detected:
             if d['type'] == 'tb_std':
@@ -1137,7 +1137,7 @@ elif page.startswith("2"):
             elif d['type'] == 'part1':
                 p1_files.append(d['file'])
             elif d['type'] == 'raw_tb':
-                # Auto-convert ГҮЙЛГЭЭ_БАЛАНС → TB_standardized
+                # Auto-convert Гүйлгаа баланс → TB_standardized
                 with st.spinner(f"📗 {d['name']} → TB хөрвүүлж байна..."):
                     d['file'].seek(0)
                     buf, tb_s = process_raw_tb(d['file'])
