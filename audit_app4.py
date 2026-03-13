@@ -15,7 +15,7 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import LabelEncoder, StandardScaler
 from sklearn.model_selection import StratifiedKFold, cross_val_predict
 from sklearn.metrics import precision_score, recall_score, f1_score, roc_auc_score, roc_curve
-import warnings, io, re, gzip
+import warnings, io, re, gzip, zipfile
 from datetime import datetime
 from collections import Counter
 warnings.filterwarnings('ignore')
@@ -459,6 +459,28 @@ def read_ledger(f):
     if raw[:2] == b'\x1f\x8b':
         return pd.read_csv(io.StringIO(gzip.decompress(raw).decode('utf-8')), dtype={'account_code': str})
     return pd.read_csv(io.BytesIO(raw), dtype={'account_code': str})
+
+
+
+def build_account_csv_zip(df, base_name="anomaly_txn_by_account"):
+    """account_code тус бүрээр CSV үүсгээд ZIP буцаана."""
+    buf = io.BytesIO()
+    if df is None or len(df) == 0 or 'account_code' not in df.columns:
+        return buf.getvalue()
+
+    def _safe_name(v):
+        s = str(v).strip() if v is not None else 'unknown'
+        s = re.sub(r'[^\w\-.]+', '_', s)
+        return s or 'unknown'
+
+    work = df.copy()
+    work['account_code'] = work['account_code'].astype(str).fillna('unknown')
+
+    with zipfile.ZipFile(buf, mode='w', compression=zipfile.ZIP_DEFLATED) as zf:
+        for acct_code, g in work.groupby('account_code', dropna=False):
+            acct_file = f"{base_name}_{_safe_name(acct_code)}.csv"
+            zf.writestr(acct_file, g.to_csv(index=False).encode('utf-8-sig'))
+    return buf.getvalue()
 
 def get_year(name):
     for y in range(2020, 2030):
@@ -1955,6 +1977,30 @@ elif page.startswith("2"):
                 st.write(f"Нийт: **{len(t_disp):,}** гүйлгээ")
                 st.dataframe(t_disp, use_container_width=True, hide_index=True, height=500)
                 st.download_button("📥 Хэвийн бус гүйлгээ CSV", t_disp.to_csv(index=False).encode('utf-8-sig'), "anomaly_txn.csv")
+
+                if len(t_disp) > 0 and 'account_code' in t_disp.columns:
+                    st.markdown("### 📦 Данс тус бүрээр татах")
+                    acct_codes_txn = sorted([str(x) for x in t_disp['account_code'].dropna().astype(str).unique().tolist()])
+                    s1, s2 = st.columns([1, 1])
+                    with s1:
+                        sel_acct_code = st.selectbox("Дансны код сонгох", acct_codes_txn, key='txn_acct_csv_sel')
+                    with s2:
+                        acct_one = t_disp[t_disp['account_code'].astype(str) == str(sel_acct_code)].copy()
+                        st.download_button(
+                            f"📥 {sel_acct_code} дансны CSV",
+                            acct_one.to_csv(index=False).encode('utf-8-sig'),
+                            f"anomaly_txn_{re.sub(r'[^\w\-.]+', '_', str(sel_acct_code))}.csv",
+                            key='dl_txn_one_acct'
+                        )
+
+                    zip_bytes = build_account_csv_zip(t_disp, base_name='anomaly_txn')
+                    st.download_button(
+                        "📥 Бүх дансыг ZIP-ээр татах",
+                        zip_bytes,
+                        "anomaly_txn_by_account.zip",
+                        mime="application/zip",
+                        key='dl_txn_zip'
+                    )
             next_idx += 1
 
             with all_tabs[next_idx]:
