@@ -335,21 +335,110 @@ def load_tb(files):
         return pd.DataFrame(columns=must_cols + ['year']), {}
     return pd.concat(frames, ignore_index=True), stats
 
-def load_ledger_stats(files):
-    """Ledger файлуудыг уншиж stats + бүрэн DataFrame буцаана."""
+
+def load_ledger_stats(files, sample_per_year=20000, chunksize=100000):
+    """Ledger файлуудыг chunk-ээр уншиж stats + sample DataFrame буцаана.
+    Том ledger дээр Streamlit Cloud OOM болохоос сэргийлнэ.
+    """
     stats = {}
-    all_frames = []
+    sampled_frames = []
+    needed_cols = [
+        'report_year','account_code','account_name','transaction_no','transaction_date',
+        'journal_no','document_no','counterparty_name','counterparty_id',
+        'transaction_description','debit_mnt','credit_mnt','balance_mnt','month'
+    ]
+
+    def _iter_chunks(fobj):
+        fobj.seek(0)
+        raw = fobj.read()
+        fobj.seek(0)
+        if raw[:2] == b'\x1f\x8b':
+            bio = io.BytesIO(gzip.decompress(raw))
+            return pd.read_csv(bio, dtype={'account_code': str}, chunksize=chunksize)
+        return pd.read_csv(io.BytesIO(raw), dtype={'account_code': str}, chunksize=chunksize)
+
     for f in files:
         year = get_year(f.name)
-        f.seek(0)
-        df = read_ledger(f)
-        for c in ['debit_mnt', 'credit_mnt']:
-            df[c] = pd.to_numeric(df[c], errors='coerce').fillna(0)
-        df['report_year'] = str(year)
-        mo = df.groupby('month').agg(rows=('debit_mnt', 'count'), debit=('debit_mnt', 'sum'), credit=('credit_mnt', 'sum'))
-        stats[year] = {'rows': len(df), 'accounts': df['account_code'].nunique(), 'months': df['month'].nunique(), 'monthly': mo}
-        all_frames.append(df)
-    full_df = pd.concat(all_frames, ignore_index=True) if all_frames else pd.DataFrame()
+        total_rows = 0
+        acct_set = set()
+        month_set = set()
+        monthly_parts = []
+        year_samples = []
+
+        try:
+            for chunk in _iter_chunks(f):
+                total_rows += len(chunk)
+
+                for c in needed_cols:
+                    if c not in chunk.columns:
+                        chunk[c] = '' if c in (
+                            'report_year','account_code','account_name','transaction_no','transaction_date',
+                            'journal_no','document_no','counterparty_name','counterparty_id',
+                            'transaction_description','month'
+                        ) else 0
+
+                chunk['account_code'] = chunk['account_code'].astype(str)
+                chunk['debit_mnt'] = pd.to_numeric(chunk['debit_mnt'], errors='coerce').fillna(0)
+                chunk['credit_mnt'] = pd.to_numeric(chunk['credit_mnt'], errors='coerce').fillna(0)
+                chunk['report_year'] = str(year)
+
+                acct_set.update(chunk['account_code'].dropna().astype(str).unique().tolist())
+                month_set.update(chunk['month'].dropna().astype(str).unique().tolist())
+
+                mo = chunk.groupby('month').agg(
+                    rows=('debit_mnt', 'count'),
+                    debit=('debit_mnt', 'sum'),
+                    credit=('credit_mnt', 'sum')
+                ).reset_index()
+                monthly_parts.append(mo)
+
+                # sample cap
+                current_n = sum(len(x) for x in year_samples)
+                remain = max(sample_per_year - current_n, 0)
+                if remain > 0:
+                    take_n = min(len(chunk), max(1000, remain))
+                    year_samples.append(chunk.sample(n=min(take_n, len(chunk)), random_state=42)[needed_cols].copy())
+
+        except Exception:
+            # fallback жижиг файл дээр full read
+            f.seek(0)
+            df = read_ledger(f)
+            total_rows = len(df)
+            for c in needed_cols:
+                if c not in df.columns:
+                    df[c] = '' if c in (
+                        'report_year','account_code','account_name','transaction_no','transaction_date',
+                        'journal_no','document_no','counterparty_name','counterparty_id',
+                        'transaction_description','month'
+                    ) else 0
+            df['account_code'] = df['account_code'].astype(str)
+            df['debit_mnt'] = pd.to_numeric(df['debit_mnt'], errors='coerce').fillna(0)
+            df['credit_mnt'] = pd.to_numeric(df['credit_mnt'], errors='coerce').fillna(0)
+            df['report_year'] = str(year)
+            acct_set.update(df['account_code'].dropna().astype(str).unique().tolist())
+            month_set.update(df['month'].dropna().astype(str).unique().tolist())
+            monthly_parts.append(df.groupby('month').agg(rows=('debit_mnt', 'count'), debit=('debit_mnt', 'sum'), credit=('credit_mnt', 'sum')).reset_index())
+            year_samples.append(df.sample(n=min(sample_per_year, len(df)), random_state=42)[needed_cols].copy())
+
+        mo = pd.concat(monthly_parts, ignore_index=True).groupby('month').agg(
+            rows=('rows', 'sum'),
+            debit=('debit', 'sum'),
+            credit=('credit', 'sum')
+        ).sort_index() if monthly_parts else pd.DataFrame(columns=['rows','debit','credit'])
+
+        stats[year] = {
+            'rows': int(total_rows),
+            'accounts': int(len(acct_set)),
+            'months': int(len(month_set)),
+            'monthly': mo
+        }
+
+        if year_samples:
+            year_sample = pd.concat(year_samples, ignore_index=True).head(sample_per_year)
+            year_sample['report_year'] = str(year)
+            sampled_frames.append(year_sample)
+
+    full_df = pd.concat(sampled_frames, ignore_index=True) if sampled_frames else pd.DataFrame(columns=needed_cols)
     return stats, full_df
 
 def load_part1(files):
@@ -1346,6 +1435,7 @@ elif page.startswith("2"):
 
 
 
+
 elif page.startswith("3"):
     st.header("3️⃣ Материаллаг байдлын тооцоо")
     st.markdown("""
@@ -1357,10 +1447,16 @@ elif page.startswith("3"):
     </div>
     """, unsafe_allow_html=True)
 
-    mat_files = st.file_uploader("📎 TB эсвэл ГҮЙЛГЭЭ_БАЛАНС файлуудаа оруулна уу", type=['xlsx'], accept_multiple_files=True, key='materiality_files')
+    mat_files = st.file_uploader(
+        "📎 TB эсвэл ГҮЙЛГЭЭ_БАЛАНС файлуудаа оруулна уу",
+        type=['xlsx'],
+        accept_multiple_files=True,
+        key='materiality_files'
+    )
+
     all_tb_files = []
+    det_rows = []
     if mat_files:
-        det_rows = []
         for f in mat_files:
             ftype, year = detect_file_type(f)
             f.seek(0)
@@ -1379,52 +1475,83 @@ elif page.startswith("3"):
                         st.warning(f"⚠️ {f.name} файлаас TB мөр уншигдсангүй.")
                 except Exception as e:
                     st.warning(f"⚠️ {f.name} TB хөрвүүлэлт амжилтгүй: {e}")
-        st.dataframe(pd.DataFrame(det_rows), use_container_width=True, hide_index=True)
+
+        if det_rows:
+            st.dataframe(pd.DataFrame(det_rows), use_container_width=True, hide_index=True)
 
     c1, c2, c3 = st.columns(3)
     with c1:
-        overall = st.number_input("Нийт материаллаг байдлын дүн", min_value=0.0, value=10000000.0, step=1000000.0, format="%.2f")
+        overall = st.number_input("Нийт материаллаг байдлын дүн", min_value=0.0, value=10000000.0, step=1000000.0, format="%.2f", key='mat_overall')
     with c2:
-        perf_ratio = st.slider("Гүйцэтгэлийн материаллаг байдлын хувь", 0.4, 0.95, 0.75, 0.05)
+        perf_ratio = st.slider("Гүйцэтгэлийн материаллаг байдлын хувь", 0.4, 0.95, 0.75, 0.05, key='mat_perf_ratio')
     with c3:
-        trivial_ratio = st.slider("Анхаарах доод дүнгийн хувь", 0.01, 0.20, 0.05, 0.01)
+        trivial_ratio = st.slider("Анхаарах доод дүнгийн хувь", 0.01, 0.20, 0.05, 0.01, key='mat_trivial_ratio')
 
-    if st.button("📊 Материаллаг байдлыг тооцох", type="primary", use_container_width=True) and all_tb_files:
+    tb_all = pd.DataFrame()
+    if all_tb_files:
         tb_all, tb_stats = load_tb(all_tb_files)
+
+    years = sorted(tb_all['year'].dropna().unique().tolist()) if not tb_all.empty and 'year' in tb_all.columns else []
+    selected_year = None
+    if years:
+        selected_year = st.selectbox("Жил сонгох", options=years, index=len(years)-1, key='materiality_selected_year')
+
+    if st.button("📊 Материаллаг байдлыг тооцох", type="primary", use_container_width=True, disabled=tb_all.empty):
         if tb_all.empty:
             st.warning("⚠️ Материаллаг байдлын тооцоонд ашиглах TB өгөгдөл олдсонгүй.")
         else:
-            years = sorted(tb_all['year'].dropna().unique().tolist()) if 'year' in tb_all.columns else []
-            selected_year = st.selectbox("Жил сонгох", options=years, index=len(years)-1 if years else 0) if years else None
             tb_year = tb_all[tb_all['year'] == selected_year].copy() if selected_year is not None else tb_all.copy()
             if tb_year.empty:
                 st.warning("⚠️ Сонгосон жилд TB өгөгдөл байхгүй.")
             else:
-                if overall <= 0:
-                    overall = materiality_base_from_tb(tb_year) * 0.01
-                mat_df = build_materiality_by_account(tb_year, overall, perf_ratio, trivial_ratio)
-                st.markdown("### Материаллаг байдлын хуваарилалт")
-                m1, m2, m3 = st.columns(3)
-                m1.metric("Нийт материаллаг байдал", f"{overall:,.0f}")
-                m2.metric("Гүйцэтгэлийн материаллаг байдал", f"{overall * perf_ratio:,.0f}")
-                m3.metric("Дансны тоо", f"{len(mat_df):,}")
-                query = st.text_input("Данс хайх")
-                show_df = mat_df.copy()
-                if query:
-                    q = query.lower().strip()
-                    show_df = show_df[
-                        show_df['account_code'].astype(str).str.lower().str.contains(q, na=False) |
-                        show_df['account_name'].astype(str).str.lower().str.contains(q, na=False)
-                    ]
-                st.dataframe(show_df, use_container_width=True, hide_index=True)
-                fig = px.bar(show_df.head(20), x='account_code', y='төлөвлөлтийн материаллаг байдал',
-                             hover_data=['account_name','гүйцэтгэлийн материаллаг байдал','анхаарах доод дүн'],
-                             title='Материаллаг байдал хамгийн өндөр 20 данс')
+                overall_use = overall if overall > 0 else materiality_base_from_tb(tb_year) * 0.01
+                mat_df = build_materiality_by_account(tb_year, overall_use, perf_ratio, trivial_ratio)
+                st.session_state['materiality_done'] = True
+                st.session_state['materiality_df'] = mat_df
+                st.session_state['materiality_year'] = selected_year
+                st.session_state['materiality_overall'] = overall_use
+
+    if st.session_state.get('materiality_done', False):
+        mat_df = st.session_state.get('materiality_df', pd.DataFrame())
+        selected_year = st.session_state.get('materiality_year', selected_year)
+        overall_use = st.session_state.get('materiality_overall', overall)
+        if mat_df is None or mat_df.empty:
+            st.warning("⚠️ Материаллаг байдлын үр дүн хоосон байна.")
+        else:
+            st.markdown("### Материаллаг байдлын хуваарилалт")
+            m1, m2, m3 = st.columns(3)
+            m1.metric("Нийт материаллаг байдал", f"{overall_use:,.0f}")
+            m2.metric("Гүйцэтгэлийн материаллаг байдал", f"{overall_use * perf_ratio:,.0f}")
+            m3.metric("Дансны тоо", f"{len(mat_df):,}")
+
+            query = st.text_input("Данс хайх", key='materiality_query')
+            show_df = mat_df.copy()
+            if query:
+                q = query.lower().strip()
+                show_df = show_df[
+                    show_df['account_code'].astype(str).str.lower().str.contains(q, na=False) |
+                    show_df['account_name'].astype(str).str.lower().str.contains(q, na=False)
+                ]
+
+            st.dataframe(show_df, use_container_width=True, hide_index=True)
+
+            if not show_df.empty:
+                fig = px.bar(
+                    show_df.head(20),
+                    x='account_code',
+                    y='төлөвлөлтийн материаллаг байдал',
+                    hover_data=['account_name','гүйцэтгэлийн материаллаг байдал','анхаарах доод дүн'],
+                    title='Материаллаг байдал хамгийн өндөр 20 данс'
+                )
                 st.plotly_chart(fig, use_container_width=True)
-                out = io.BytesIO()
-                with pd.ExcelWriter(out, engine='openpyxl') as w:
-                    mat_df.to_excel(w, sheet_name='Материаллаг_байдал', index=False)
-                out.seek(0)
-                st.download_button("📥 Материаллаг байдлын тооцоо татах", data=out.getvalue(),
-                                   file_name=f"materiality_accounts_{selected_year if selected_year is not None else 'all'}.xlsx",
-                                   mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+
+            out = io.BytesIO()
+            with pd.ExcelWriter(out, engine='openpyxl') as w:
+                mat_df.to_excel(w, sheet_name='Материаллаг_байдал', index=False)
+            out.seek(0)
+            st.download_button(
+                "📥 Материаллаг байдлын тооцоо татах",
+                data=out.getvalue(),
+                file_name=f"materiality_accounts_{selected_year if selected_year is not None else 'all'}.xlsx",
+                mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+            )
