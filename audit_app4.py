@@ -796,6 +796,251 @@ def load_ledger_stats(files, sample_per_year=20000, chunksize=100000):
     full_df = pd.concat(sampled_frames, ignore_index=True) if sampled_frames else pd.DataFrame(columns=needed_cols)
     return stats, full_df
 
+def load_ledger_reconciliation(files, chunksize=100000):
+    """Full ledger-ээс данс бүрийн сарын болон жилийн roll-forward / reconciliation хүснэгтүүдийг chunk-ээр бэлдэнэ."""
+    month_store = {}
+    year_store = {}
+
+    needed_cols = [
+        'report_year','account_code','account_name','transaction_no','transaction_date',
+        'debit_mnt','credit_mnt','balance_mnt','month'
+    ]
+
+    def _iter_chunks(fobj):
+        fobj.seek(0)
+        raw = fobj.read()
+        fobj.seek(0)
+        if raw[:2] == b'\x1f\x8b':
+            bio = io.BytesIO(gzip.decompress(raw))
+            return pd.read_csv(bio, dtype={'account_code': str}, chunksize=chunksize)
+        return pd.read_csv(io.BytesIO(raw), dtype={'account_code': str}, chunksize=chunksize)
+
+    def _tx_sort_series(chunk):
+        txd = pd.to_datetime(chunk['transaction_date'], errors='coerce')
+        txno_num = pd.to_numeric(chunk['transaction_no'], errors='coerce')
+        txno_str = chunk['transaction_no'].astype(str).fillna('')
+        sort_key = txd.dt.strftime('%Y%m%d').fillna('00000000') + '_' + txno_num.fillna(0).astype(float).round(0).astype(int).astype(str).str.zfill(10) + '_' + txno_str
+        return sort_key
+
+    def _merge_month_row(key, row):
+        rec = month_store.get(key)
+        if rec is None:
+            month_store[key] = row
+            return
+        rec['txn_count'] += row['txn_count']
+        rec['debit_sum'] += row['debit_sum']
+        rec['credit_sum'] += row['credit_sum']
+        rec['net_sum'] += row['net_sum']
+        if row['first_sort'] < rec['first_sort']:
+            rec['first_sort'] = row['first_sort']
+            rec['first_balance'] = row['first_balance']
+            rec['first_net'] = row['first_net']
+        if row['last_sort'] > rec['last_sort']:
+            rec['last_sort'] = row['last_sort']
+            rec['last_balance'] = row['last_balance']
+        if (not rec.get('account_name')) and row.get('account_name'):
+            rec['account_name'] = row['account_name']
+
+    def _merge_year_row(key, row):
+        rec = year_store.get(key)
+        if rec is None:
+            year_store[key] = row
+            return
+        rec['txn_count'] += row['txn_count']
+        rec['debit_sum'] += row['debit_sum']
+        rec['credit_sum'] += row['credit_sum']
+        rec['net_sum'] += row['net_sum']
+        if row['first_sort'] < rec['first_sort']:
+            rec['first_sort'] = row['first_sort']
+            rec['first_balance'] = row['first_balance']
+            rec['first_net'] = row['first_net']
+        if row['last_sort'] > rec['last_sort']:
+            rec['last_sort'] = row['last_sort']
+            rec['last_balance'] = row['last_balance']
+        if (not rec.get('account_name')) and row.get('account_name'):
+            rec['account_name'] = row['account_name']
+
+    for f in files:
+        year = str(get_year(f.name))
+        try:
+            chunks = _iter_chunks(f)
+        except Exception:
+            f.seek(0)
+            df0 = read_ledger(f)
+            chunks = [df0]
+
+        for chunk in chunks:
+            if chunk is None or len(chunk) == 0:
+                continue
+            for c in needed_cols:
+                if c not in chunk.columns:
+                    chunk[c] = '' if c in ('report_year','account_code','account_name','transaction_no','transaction_date','month') else 0
+            chunk = chunk[needed_cols].copy()
+            chunk['report_year'] = chunk['report_year'].astype(str).replace({'': year, 'nan': year}).fillna(year)
+            chunk['report_year'] = chunk['report_year'].where(chunk['report_year'].str.len() > 0, year)
+            chunk['account_code'] = chunk['account_code'].astype(str).fillna('')
+            chunk['account_name'] = chunk['account_name'].astype(str).fillna('')
+            chunk['transaction_no'] = chunk['transaction_no'].astype(str).fillna('')
+            chunk['debit_mnt'] = pd.to_numeric(chunk['debit_mnt'], errors='coerce').fillna(0.0)
+            chunk['credit_mnt'] = pd.to_numeric(chunk['credit_mnt'], errors='coerce').fillna(0.0)
+            chunk['balance_mnt'] = pd.to_numeric(chunk['balance_mnt'], errors='coerce').fillna(0.0)
+            txd = pd.to_datetime(chunk['transaction_date'], errors='coerce')
+            chunk['month'] = chunk['month'].astype(str).fillna('')
+            chunk.loc[chunk['month'].isin(['', 'nan', 'NaT']), 'month'] = txd.dt.strftime('%Y-%m').fillna('')
+            chunk['net_mnt'] = chunk['debit_mnt'] - chunk['credit_mnt']
+            chunk['tx_sort'] = _tx_sort_series(chunk)
+
+            # month aggregates
+            mo_sum = chunk.groupby(['report_year','month','account_code','account_name'], dropna=False).agg(
+                txn_count=('net_mnt', 'count'),
+                debit_sum=('debit_mnt', 'sum'),
+                credit_sum=('credit_mnt', 'sum'),
+                net_sum=('net_mnt', 'sum')
+            ).reset_index()
+            mo_first = chunk.sort_values('tx_sort').groupby(['report_year','month','account_code','account_name'], dropna=False).first().reset_index()
+            mo_last = chunk.sort_values('tx_sort').groupby(['report_year','month','account_code','account_name'], dropna=False).last().reset_index()
+            mo = mo_sum.merge(mo_first[['report_year','month','account_code','account_name','tx_sort','balance_mnt','net_mnt']], on=['report_year','month','account_code','account_name'], how='left')
+            mo = mo.rename(columns={'tx_sort':'first_sort','balance_mnt':'first_balance','net_mnt':'first_net'})
+            mo = mo.merge(mo_last[['report_year','month','account_code','account_name','tx_sort','balance_mnt']], on=['report_year','month','account_code','account_name'], how='left')
+            mo = mo.rename(columns={'tx_sort':'last_sort','balance_mnt':'last_balance'})
+            for r in mo.to_dict('records'):
+                key = (r['report_year'], r['month'], str(r['account_code']), str(r['account_name']))
+                _merge_month_row(key, r)
+
+            # year aggregates
+            yr_sum = chunk.groupby(['report_year','account_code','account_name'], dropna=False).agg(
+                txn_count=('net_mnt', 'count'),
+                debit_sum=('debit_mnt', 'sum'),
+                credit_sum=('credit_mnt', 'sum'),
+                net_sum=('net_mnt', 'sum')
+            ).reset_index()
+            yr_first = chunk.sort_values('tx_sort').groupby(['report_year','account_code','account_name'], dropna=False).first().reset_index()
+            yr_last = chunk.sort_values('tx_sort').groupby(['report_year','account_code','account_name'], dropna=False).last().reset_index()
+            yr = yr_sum.merge(yr_first[['report_year','account_code','account_name','tx_sort','balance_mnt','net_mnt']], on=['report_year','account_code','account_name'], how='left')
+            yr = yr.rename(columns={'tx_sort':'first_sort','balance_mnt':'first_balance','net_mnt':'first_net'})
+            yr = yr.merge(yr_last[['report_year','account_code','account_name','tx_sort','balance_mnt']], on=['report_year','account_code','account_name'], how='left')
+            yr = yr.rename(columns={'tx_sort':'last_sort','balance_mnt':'last_balance'})
+            for r in yr.to_dict('records'):
+                key = (r['report_year'], str(r['account_code']), str(r['account_name']))
+                _merge_year_row(key, r)
+
+    month_df = pd.DataFrame(list(month_store.values())) if month_store else pd.DataFrame()
+    year_df = pd.DataFrame(list(year_store.values())) if year_store else pd.DataFrame()
+
+    if not month_df.empty:
+        month_df['opening_balance_est'] = pd.to_numeric(month_df['first_balance'], errors='coerce').fillna(0) - pd.to_numeric(month_df['first_net'], errors='coerce').fillna(0)
+        month_df['closing_balance_calc'] = month_df['opening_balance_est'] + pd.to_numeric(month_df['net_sum'], errors='coerce').fillna(0)
+        month_df['ledger_closing_balance'] = pd.to_numeric(month_df['last_balance'], errors='coerce').fillna(0)
+        month_df['recording_diff_mnt'] = month_df['ledger_closing_balance'] - month_df['closing_balance_calc']
+        month_df['abs_recording_diff_mnt'] = month_df['recording_diff_mnt'].abs()
+        month_df['has_recording_diff'] = (month_df['abs_recording_diff_mnt'] > 0.005).astype(int)
+        month_df = month_df[[
+            'report_year','month','account_code','account_name','txn_count',
+            'opening_balance_est','debit_sum','credit_sum','net_sum',
+            'closing_balance_calc','ledger_closing_balance','recording_diff_mnt',
+            'abs_recording_diff_mnt','has_recording_diff'
+        ]].sort_values(['report_year','month','account_code'])
+
+    if not year_df.empty:
+        year_df['opening_balance_est'] = pd.to_numeric(year_df['first_balance'], errors='coerce').fillna(0) - pd.to_numeric(year_df['first_net'], errors='coerce').fillna(0)
+        year_df['closing_balance_calc'] = year_df['opening_balance_est'] + pd.to_numeric(year_df['net_sum'], errors='coerce').fillna(0)
+        year_df['ledger_closing_balance'] = pd.to_numeric(year_df['last_balance'], errors='coerce').fillna(0)
+        year_df['recording_diff_mnt'] = year_df['ledger_closing_balance'] - year_df['closing_balance_calc']
+        year_df['abs_recording_diff_mnt'] = year_df['recording_diff_mnt'].abs()
+        year_df['has_recording_diff'] = (year_df['abs_recording_diff_mnt'] > 0.005).astype(int)
+        year_df = year_df[[
+            'report_year','account_code','account_name','txn_count',
+            'opening_balance_est','debit_sum','credit_sum','net_sum',
+            'closing_balance_calc','ledger_closing_balance','recording_diff_mnt',
+            'abs_recording_diff_mnt','has_recording_diff'
+        ]].sort_values(['report_year','account_code'])
+
+    return year_df, month_df
+
+
+def build_tb_ledger_reconciliation(tb_df, ledger_year_df):
+    """TB болон full ledger yearly aggregate-ийг тулгаж данс тус бүрийн жилийн зөрүүг гаргана."""
+    if tb_df is None or len(tb_df) == 0 or ledger_year_df is None or len(ledger_year_df) == 0:
+        return pd.DataFrame()
+    tb = tb_df.copy()
+    ly = ledger_year_df.copy()
+    tb['year'] = tb['year'].astype(str)
+    ly['report_year'] = ly['report_year'].astype(str)
+    tb['account_code'] = tb['account_code'].astype(str)
+    ly['account_code'] = ly['account_code'].astype(str)
+    tb_cols = ['opening_balance_signed','turnover_debit','turnover_credit','turnover_net_signed','closing_balance_signed']
+    for c in tb_cols:
+        if c not in tb.columns:
+            tb[c] = 0.0
+        tb[c] = pd.to_numeric(tb[c], errors='coerce').fillna(0.0)
+    for c in ['opening_balance_est','debit_sum','credit_sum','net_sum','ledger_closing_balance','recording_diff_mnt']:
+        if c not in ly.columns:
+            ly[c] = 0.0
+        ly[c] = pd.to_numeric(ly[c], errors='coerce').fillna(0.0)
+
+    out = tb.merge(ly, left_on=['year','account_code'], right_on=['report_year','account_code'], how='outer', suffixes=('_tb','_ledger'))
+    out['account_name'] = out.get('account_name_tb', '').astype(str)
+    if 'account_name_ledger' in out.columns:
+        out['account_name'] = out['account_name'].where(out['account_name'].astype(str).str.strip() != '', out['account_name_ledger'].astype(str))
+    out['year'] = out['year'].fillna(out['report_year']).astype(str)
+
+    out['diff_opening_mnt'] = out['opening_balance_signed'].fillna(0) - out['opening_balance_est'].fillna(0)
+    out['diff_debit_mnt'] = out['turnover_debit'].fillna(0) - out['debit_sum'].fillna(0)
+    out['diff_credit_mnt'] = out['turnover_credit'].fillna(0) - out['credit_sum'].fillna(0)
+    out['diff_net_mnt'] = out['turnover_net_signed'].fillna(0) - out['net_sum'].fillna(0)
+    out['diff_closing_mnt'] = out['closing_balance_signed'].fillna(0) - out['ledger_closing_balance'].fillna(0)
+    out['max_abs_diff_mnt'] = out[['diff_opening_mnt','diff_debit_mnt','diff_credit_mnt','diff_net_mnt','diff_closing_mnt']].abs().max(axis=1)
+    out['has_any_diff'] = (out['max_abs_diff_mnt'] > 0.005).astype(int)
+
+    cols = [
+        'year','account_code','account_name',
+        'opening_balance_signed','opening_balance_est','diff_opening_mnt',
+        'turnover_debit','debit_sum','diff_debit_mnt',
+        'turnover_credit','credit_sum','diff_credit_mnt',
+        'turnover_net_signed','net_sum','diff_net_mnt',
+        'closing_balance_signed','ledger_closing_balance','diff_closing_mnt',
+        'recording_diff_mnt','max_abs_diff_mnt','has_any_diff'
+    ]
+    for c in cols:
+        if c not in out.columns:
+            out[c] = '' if c in ['year','account_code','account_name'] else 0
+    return out[cols].sort_values(['year','max_abs_diff_mnt','account_code'], ascending=[True, False, True]).reset_index(drop=True)
+
+
+def build_account_recon_zip(yearly_tb_ledger_df, monthly_roll_df, base_name='account_reconciliation'):
+    """Данс тус бүрээр сар/жил нийлүүлсэн CSV-үүдийг ZIP болгоно."""
+    buf = io.BytesIO()
+    if (yearly_tb_ledger_df is None or len(yearly_tb_ledger_df) == 0) and (monthly_roll_df is None or len(monthly_roll_df) == 0):
+        return buf.getvalue()
+
+    acct_codes = set()
+    if yearly_tb_ledger_df is not None and len(yearly_tb_ledger_df) > 0 and 'account_code' in yearly_tb_ledger_df.columns:
+        acct_codes.update(yearly_tb_ledger_df['account_code'].dropna().astype(str).unique().tolist())
+    if monthly_roll_df is not None and len(monthly_roll_df) > 0 and 'account_code' in monthly_roll_df.columns:
+        acct_codes.update(monthly_roll_df['account_code'].dropna().astype(str).unique().tolist())
+
+    def _safe_name(v):
+        s = str(v).strip() if v is not None else 'unknown'
+        s = re.sub(r'[^\w\-.]+', '_', s)
+        return s or 'unknown'
+
+    with zipfile.ZipFile(buf, mode='w', compression=zipfile.ZIP_DEFLATED) as zf:
+        for acct in sorted(acct_codes):
+            monthly_part = pd.DataFrame()
+            yearly_part = pd.DataFrame()
+            if monthly_roll_df is not None and len(monthly_roll_df) > 0:
+                monthly_part = monthly_roll_df[monthly_roll_df['account_code'].astype(str) == str(acct)].copy()
+            if yearly_tb_ledger_df is not None and len(yearly_tb_ledger_df) > 0:
+                yearly_part = yearly_tb_ledger_df[yearly_tb_ledger_df['account_code'].astype(str) == str(acct)].copy()
+            if monthly_part.empty and yearly_part.empty:
+                continue
+            name = _safe_name(acct)
+            if not yearly_part.empty:
+                zf.writestr(f"{base_name}_{name}_yearly.csv", yearly_part.to_csv(index=False).encode('utf-8-sig'))
+            if not monthly_part.empty:
+                zf.writestr(f"{base_name}_{name}_monthly.csv", monthly_part.to_csv(index=False).encode('utf-8-sig'))
+    return buf.getvalue()
+
 def load_part1(files):
     all_rm = []
     all_mo = []
@@ -1746,7 +1991,8 @@ elif page.startswith("2"):
         # Дансны түвшний шинжилгээ (TB + Ledger хоёулаа байвал)
         df = pd.DataFrame(); X = np.array([]); y = np.array([]); feats = []
         res = {}; best = ''; fi = pd.DataFrame(); ym = np.array([])
-        tb_st = {}; led_st = {}; ledger_full = pd.DataFrame()
+        tb_all = pd.DataFrame(); tb_st = {}; led_st = {}; ledger_full = pd.DataFrame()
+        ledger_year_recon = pd.DataFrame(); ledger_month_recon = pd.DataFrame(); tb_ledger_recon = pd.DataFrame()
         rm_all = pd.DataFrame(); mo_all = pd.DataFrame()
 
         if tb_files and led_files:
@@ -1754,6 +2000,9 @@ elif page.startswith("2"):
                 tb_all, tb_st = load_tb(tb_files)
             with st.spinner("Ledger уншиж байна..."):
                 led_st, ledger_full = load_ledger_stats(led_files)
+            with st.spinner("Ledger-ийн сар/жилийн тулгалт бэлдэж байна..."):
+                ledger_year_recon, ledger_month_recon = load_ledger_reconciliation(led_files)
+                tb_ledger_recon = build_tb_ledger_reconciliation(tb_all, ledger_year_recon) if len(tb_all) > 0 else pd.DataFrame()
             if p1_files:
                 with st.spinner("Part1 уншиж байна..."):
                     rm_all, mo_all = load_part1(p1_files)
@@ -1763,6 +2012,9 @@ elif page.startswith("2"):
             # Зөвхөн Ledger байвал — stats + full уншна
             with st.spinner("Ledger уншиж байна..."):
                 led_st, ledger_full = load_ledger_stats(led_files)
+            with st.spinner("Ledger-ийн сар/жилийн тулгалт бэлдэж байна..."):
+                ledger_year_recon, ledger_month_recon = load_ledger_reconciliation(led_files)
+                tb_ledger_recon = build_tb_ledger_reconciliation(tb_all, ledger_year_recon) if len(tb_all) > 0 else pd.DataFrame()
             if p1_files:
                 with st.spinner("Part1 уншиж байна..."):
                     rm_all, mo_all = load_part1(p1_files)
@@ -1803,7 +2055,12 @@ elif page.startswith("2"):
         st.session_state['best'] = best
         st.session_state['fi'] = fi
         st.session_state['ym'] = ym
+        st.session_state['tb_all'] = tb_all if 'tb_all' in locals() else pd.DataFrame()
         st.session_state['tb_st'] = tb_st
+        st.session_state['ledger_full'] = ledger_full if 'ledger_full' in locals() else pd.DataFrame()
+        st.session_state['ledger_year_recon'] = ledger_year_recon if 'ledger_year_recon' in locals() else pd.DataFrame()
+        st.session_state['ledger_month_recon'] = ledger_month_recon if 'ledger_month_recon' in locals() else pd.DataFrame()
+        st.session_state['tb_ledger_recon'] = tb_ledger_recon if 'tb_ledger_recon' in locals() else pd.DataFrame()
         st.session_state['led_st'] = led_st
         st.session_state['rm_all'] = rm_all
         st.session_state['mo_all'] = mo_all
@@ -1822,7 +2079,12 @@ elif page.startswith("2"):
         best = st.session_state['best']
         fi = st.session_state['fi']
         ym = st.session_state['ym']
+        tb_all = st.session_state.get('tb_all', pd.DataFrame())
         tb_st = st.session_state['tb_st']
+        ledger_full = st.session_state.get('ledger_full', pd.DataFrame())
+        ledger_year_recon = st.session_state.get('ledger_year_recon', pd.DataFrame())
+        ledger_month_recon = st.session_state.get('ledger_month_recon', pd.DataFrame())
+        tb_ledger_recon = st.session_state.get('tb_ledger_recon', pd.DataFrame())
         led_st = st.session_state['led_st']
         rm_all = st.session_state['rm_all']
         mo_all = st.session_state['mo_all']
@@ -2170,6 +2432,84 @@ elif page.startswith("2"):
                         mime="application/zip",
                         key='dl_txn_zip'
                     )
+
+                if len(ledger_month_recon) > 0 or len(tb_ledger_recon) > 0:
+                    st.markdown("### 📚 Данс тус бүрийн бүртгэлийн зөрүү (сар / жил)")
+                    st.caption("Сарын тайлан нь ledger доторх roll-forward зөрүүг, жилийн тайлан нь TB ба ledger-ийн тулгалтын зөрүүг харуулна.")
+
+                    r1, r2 = st.columns(2)
+                    with r1:
+                        if len(ledger_month_recon) > 0:
+                            monthly_diff_only = ledger_month_recon[ledger_month_recon['has_recording_diff'] == 1].copy()
+                            st.metric("Сарын зөрүүтэй мөр", f"{len(monthly_diff_only):,}")
+                    with r2:
+                        if len(tb_ledger_recon) > 0:
+                            yearly_diff_only = tb_ledger_recon[tb_ledger_recon['has_any_diff'] == 1].copy()
+                            st.metric("Жилийн зөрүүтэй данс", f"{len(yearly_diff_only):,}")
+
+                    acct_candidates = set()
+                    if len(ledger_month_recon) > 0:
+                        acct_candidates.update(ledger_month_recon['account_code'].dropna().astype(str).unique().tolist())
+                    if len(tb_ledger_recon) > 0:
+                        acct_candidates.update(tb_ledger_recon['account_code'].dropna().astype(str).unique().tolist())
+                    acct_candidates = sorted(acct_candidates)
+
+                    if acct_candidates:
+                        rc1, rc2 = st.columns([1,1])
+                        with rc1:
+                            sel_recon_acct = st.selectbox("Бүртгэлийн зөрүү харах данс", acct_candidates, key='recon_acct_sel')
+                        monthly_one = ledger_month_recon[ledger_month_recon['account_code'].astype(str) == str(sel_recon_acct)].copy() if len(ledger_month_recon) > 0 else pd.DataFrame()
+                        yearly_one = tb_ledger_recon[tb_ledger_recon['account_code'].astype(str) == str(sel_recon_acct)].copy() if len(tb_ledger_recon) > 0 else pd.DataFrame()
+
+                        if not monthly_one.empty:
+                            st.write("**Сараар**")
+                            st.dataframe(monthly_one, use_container_width=True, hide_index=True, height=240)
+                        if not yearly_one.empty:
+                            st.write("**Жилээр**")
+                            st.dataframe(yearly_one, use_container_width=True, hide_index=True, height=200)
+
+                        merged_buf = io.BytesIO()
+                        with pd.ExcelWriter(merged_buf, engine='openpyxl') as w:
+                            if not yearly_one.empty:
+                                yearly_one.to_excel(w, sheet_name='yearly', index=False)
+                            if not monthly_one.empty:
+                                monthly_one.to_excel(w, sheet_name='monthly', index=False)
+                        merged_buf.seek(0)
+                        with rc2:
+                            st.download_button(
+                                f"📥 {sel_recon_acct} дансны сар+жилийн Excel",
+                                merged_buf.getvalue(),
+                                f"account_reconciliation_{re.sub(r'[^\w\-.]+', '_', str(sel_recon_acct))}.xlsx",
+                                key='dl_recon_one_excel'
+                            )
+
+                    cdl1, cdl2, cdl3 = st.columns(3)
+                    with cdl1:
+                        if len(ledger_month_recon) > 0:
+                            st.download_button(
+                                "📥 Сарын бүртгэлийн зөрүү CSV",
+                                ledger_month_recon.to_csv(index=False).encode('utf-8-sig'),
+                                "ledger_monthly_recording_diff.csv",
+                                key='dl_month_recon_csv'
+                            )
+                    with cdl2:
+                        if len(tb_ledger_recon) > 0:
+                            st.download_button(
+                                "📥 Жилийн TB-Ledger тулгалт CSV",
+                                tb_ledger_recon.to_csv(index=False).encode('utf-8-sig'),
+                                "tb_ledger_yearly_reconciliation.csv",
+                                key='dl_year_recon_csv'
+                            )
+                    with cdl3:
+                        recon_zip = build_account_recon_zip(tb_ledger_recon, ledger_month_recon, base_name='account_reconciliation')
+                        if recon_zip:
+                            st.download_button(
+                                "📥 Бүх дансыг сар/жилийн ZIP-ээр татах",
+                                recon_zip,
+                                "account_reconciliation_by_account.zip",
+                                mime='application/zip',
+                                key='dl_recon_zip'
+                            )
 
                 st.markdown("---")
                 st.markdown("### 🧾 ААБ 5.3 асуудлын бүртгэл рүү хөрвүүлэх")
