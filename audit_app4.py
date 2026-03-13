@@ -482,6 +482,175 @@ def build_account_csv_zip(df, base_name="anomaly_txn_by_account"):
             zf.writestr(acct_file, g.to_csv(index=False).encode('utf-8-sig'))
     return buf.getvalue()
 
+
+
+def _safe_sheet_name(name, fallback='AI_эрсдэл'):
+    s = str(name).strip() if name is not None else fallback
+    s = re.sub(r'[\\/*?:\[\]]+', '_', s)
+    return (s[:31] or fallback)
+
+def _pick_issue_standard(reason_text):
+    rt = str(reason_text).lower()
+    if 'чиглэл' in rt or 'ангил' in rt:
+        return 'УСНББОУС 1, УСНББОУС 12'
+    if 'давхард' in rt or 'залилан' in rt:
+        return 'ISA 240, ISA 500'
+    if 'тайлбар' in rt or 'нэр' in rt:
+        return 'ISA 520, УСНББОУС 1'
+    if 'сар' in rt or 'жил' in rt:
+        return 'ISA 240, ISA 520'
+    return 'ISA 520, ISA 315, ISA 240'
+
+def _pick_issue_law(reason_text):
+    rt = str(reason_text).lower()
+    base = 'Нягтлан бодох бүртгэлийн тухай хуулийн 20 дугаар зүйлийн 20.2.3-т “холбогдох олон улсын стандарт, эрх бүхий байгууллагаас баталсан стандарт, журам, зааврыг баримтлан бүртгэл хөтөлж, санхүүгийн тайлан гаргах” гэж заасантай нийцүүлэх шаардлагатай.'
+    if 'давхард' in rt or 'залилан' in rt:
+        return 'Нягтлан бодох бүртгэлийн тухай хуулийн 13, 20 дугаар зүйлийн шаардлага болон дотоод хяналтын журмыг мөрдөж, давхардсан болон эрсдэлтэй бичилтийг баримтаар баталгаажуулах шаардлагатай.'
+    if 'тайлбар' in rt or 'ангил' in rt or 'чиглэл' in rt:
+        return 'Нягтлан бодох бүртгэлийн тухай хуулийн 15.2-т алдааг тайлант үед залруулж тусгах, 20.2.3-т стандарт, журам баримтлах тухай заасантай нийцүүлэх шаардлагатай.'
+    return base
+
+def build_issue_register_from_txn(txn_df, materiality_df=None, overall_materiality=0.0, top_n=50):
+    """Гүйлгээний эрсдэлийн дүнг ААБ 5.3 форматтай асуудлын бүртгэлийн мөрүүд болгон нэгтгэнэ."""
+    if txn_df is None or len(txn_df) == 0:
+        return pd.DataFrame()
+
+    d = txn_df.copy()
+    for c in ['account_code','account_name','transaction_description','debit_mnt','credit_mnt','txn_risk',
+              'desc_mismatch','name_no_overlap','dir_mismatch','is_dup','cp_rare','pair_rare',
+              'desc_empty','is_month_end','is_year_end']:
+        if c not in d.columns:
+            d[c] = '' if c in ['account_code','account_name','transaction_description'] else 0
+
+    d['account_code'] = d['account_code'].astype(str).fillna('')
+    d['account_name'] = d['account_name'].astype(str).fillna('')
+    d['transaction_description'] = d['transaction_description'].astype(str).fillna('')
+    d['debit_mnt'] = pd.to_numeric(d['debit_mnt'], errors='coerce').fillna(0)
+    d['credit_mnt'] = pd.to_numeric(d['credit_mnt'], errors='coerce').fillna(0)
+    d['txn_risk'] = pd.to_numeric(d['txn_risk'], errors='coerce').fillna(0)
+    d['issue_amount'] = d['debit_mnt'].abs() + d['credit_mnt'].abs()
+
+    mat_map = {}
+    if materiality_df is not None and not materiality_df.empty:
+        m = materiality_df.copy()
+        if 'Дансны код' in m.columns and 'Зөвшөөрөгдөх алдаа ₮' in m.columns:
+            m['Дансны код'] = m['Дансны код'].astype(str)
+            mat_map = dict(zip(m['Дансны код'], pd.to_numeric(m['Зөвшөөрөгдөх алдаа ₮'], errors='coerce').fillna(0)))
+
+    reason_cols = [
+        ('desc_mismatch', 'тайлбар дансны хэв маягтай зөрсөн'),
+        ('name_no_overlap', 'дансны нэр ба тайлбарын уялдаа сул'),
+        ('dir_mismatch', 'дансны чиглэлтэй зөрсөн бичилт илэрсэн'),
+        ('is_dup', 'давхардсан бичилт илэрсэн'),
+        ('cp_rare', 'ховор харилцагчтай гүйлгээ илэрсэн'),
+        ('pair_rare', 'ховор данс-харилцагчийн хос илэрсэн'),
+        ('desc_empty', 'тайлбаргүй гүйлгээ илэрсэн'),
+        ('is_month_end', 'сарын эцсийн гүйлгээ төвлөрсөн'),
+        ('is_year_end', 'жилийн эцсийн гүйлгээ төвлөрсөн'),
+    ]
+
+    out_rows = []
+    grouped = d.groupby(['account_code','account_name'], dropna=False)
+    for acct_code, acct_name in grouped.size().index.tolist():
+        g = grouped.get_group((acct_code, acct_name)).copy()
+        flagged_cnt = len(g)
+        issue_amount = float(g['issue_amount'].sum())
+        max_risk = float(g['txn_risk'].max()) if 'txn_risk' in g.columns else 0.0
+        threshold = float(mat_map.get(str(acct_code), 0.0))
+        if threshold <= 0:
+            threshold = float(overall_materiality) if overall_materiality and overall_materiality > 0 else max(issue_amount * 0.5, 1.0)
+
+        reasons = []
+        for col, label in reason_cols:
+            if col in g.columns:
+                cnt = int(pd.to_numeric(g[col], errors='coerce').fillna(0).astype(int).sum())
+                if cnt > 0:
+                    reasons.append(f'{label} ({cnt})')
+        if not reasons:
+            reasons = ['олон шинжээр хэвийн бус гүйлгээ илэрсэн']
+
+        top_desc = ''
+        if 'transaction_description' in g.columns:
+            vc = g['transaction_description'].replace('', np.nan).dropna().astype(str).str.strip()
+            if not vc.empty:
+                top_desc = vc.value_counts().index[0][:140]
+
+        ag = 'Дансны үлдэгдэл' if str(acct_code)[:1] in ('1','2','3') else 'Ажил гүйлгээ'
+        mat_label = 'Материаллаг' if issue_amount >= threshold else 'Материаллаг бус'
+        reason_text = '; '.join(reasons[:3])
+        summary = f'{acct_code} кодтой "{acct_name}" дансанд нийт {flagged_cnt} эрсдэлтэй гүйлгээ илэрсэн бөгөөд {reason_text}.'
+        if top_desc:
+            summary += f' Түгээмэл тайлбар: "{top_desc}".'
+        summary += f' Шалгах нийт мөнгөн дүн {issue_amount:,.0f}₮.'
+
+        out_rows.append({
+            'дд': None,
+            'АГАДҮТ': ag,
+            'АГАДҮТ-ийн дэд анги': acct_name if acct_name else acct_code,
+            'Алдаа, зөрчлийн товч утга': summary,
+            'Мөнгөн дүн': round(issue_amount, 2),
+            'Материаллаг эсэх': mat_label,
+            'Стандартын заалт': _pick_issue_standard(reason_text),
+            'Хууль тогтоомжийн заалт': _pick_issue_law(reason_text),
+            'Аудитын багийн санал': 'залруулах' if mat_label == 'Материаллаг' else 'зөвлөмж',
+            'Эрсдэлийн оноо': round(max_risk, 2),
+            'Эрсдэлтэй гүйлгээний тоо': flagged_cnt,
+            'Дансны код': acct_code,
+            'Материаллаг босго ₮': round(threshold, 2),
+        })
+
+    out = pd.DataFrame(out_rows)
+    if out.empty:
+        return out
+    out = out.sort_values(['Мөнгөн дүн','Эрсдэлийн оноо','Эрсдэлтэй гүйлгээний тоо'], ascending=False).head(int(top_n)).reset_index(drop=True)
+    out['дд'] = range(1, len(out)+1)
+    return out
+
+def build_issue_register_workbook(template_file, issue_df, target_sheet=None, insert_row=12):
+    """ААБ 5.3 загварт AI-ээр үүсгэсэн асуудлын бүртгэлийг шингээсэн xlsx byte буцаана."""
+    import copy
+    import openpyxl
+
+    if issue_df is None or issue_df.empty:
+        return b''
+
+    template_file.seek(0)
+    wb = openpyxl.load_workbook(template_file)
+    if target_sheet and target_sheet in wb.sheetnames:
+        base_ws = wb[target_sheet]
+    else:
+        sheet_candidates = [s for s in wb.sheetnames if s != 'НЭГТГЭСЭН-АБ']
+        base_ws = wb[sheet_candidates[0] if sheet_candidates else wb.sheetnames[0]]
+
+    new_name = _safe_sheet_name(f'{base_ws.title}_AI')
+    if new_name in wb.sheetnames:
+        del wb[new_name]
+    ws = wb.copy_worksheet(base_ws)
+    ws.title = new_name
+
+    if ws.max_row >= insert_row:
+        ws.insert_rows(insert_row, amount=max(len(issue_df) - 1, 0))
+
+    for idx, row in enumerate(issue_df.to_dict('records'), start=insert_row):
+        ws.cell(idx, 1).value = row.get('дд')
+        ws.cell(idx, 2).value = row.get('АГАДҮТ')
+        ws.cell(idx, 3).value = row.get('АГАДҮТ-ийн дэд анги')
+        ws.cell(idx, 4).value = row.get('Алдаа, зөрчлийн товч утга')
+        ws.cell(idx, 5).value = row.get('Мөнгөн дүн')
+        ws.cell(idx, 6).value = row.get('Материаллаг эсэх')
+        ws.cell(idx, 7).value = row.get('Стандартын заалт')
+        ws.cell(idx, 8).value = row.get('Хууль тогтоомжийн заалт')
+        ws.cell(idx, 9).value = row.get('Аудитын багийн санал')
+
+    info_row = insert_row + len(issue_df) + 1
+    ws.cell(info_row, 2).value = 'AI нэгтгэлийн тайлбар'
+    ws.cell(info_row, 4).value = 'Энэхүү worksheet нь гүйлгээний түвшний эрсдэлийн шинжилгээнээс автомат нэгтгэсэн урьдчилсан ажлын хувилбар бөгөөд аудитор мэргэжлийн үнэлгээгээр эцэслэн баталгаажуулна.'
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf.getvalue()
+
 def get_year(name):
     for y in range(2020, 2030):
         if str(y) in name:
@@ -2001,6 +2170,52 @@ elif page.startswith("2"):
                         mime="application/zip",
                         key='dl_txn_zip'
                     )
+
+                st.markdown("---")
+                st.markdown("### 🧾 ААБ 5.3 асуудлын бүртгэл рүү хөрвүүлэх")
+                st.caption("Гүйлгээний түвшний эрсдэлийн шинжилгээнээс гарсан үр дүнг Асуудлын бүртгэл 5.3 загварт нэгтгэнэ.")
+                issue_template = st.file_uploader("📎 Асуудлын бүртгэл 5.3 загвар (.xlsx)", type=['xlsx'], key='issue_template_txn')
+                i1, i2 = st.columns(2)
+                with i1:
+                    top_n_issue = st.number_input("Оруулах дээд мөрийн тоо", min_value=5, max_value=300, value=50, step=5, key='issue_top_n_txn')
+                with i2:
+                    fallback_mat = float(st.session_state.get('materiality_overall', 0.0) or 0.0)
+                    overall_issue_mat = st.number_input("Нийт материаллаг байдлын fallback босго", min_value=0.0, value=fallback_mat, step=1000000.0, format="%.2f", key='issue_overall_mat_txn')
+
+                issue_df = build_issue_register_from_txn(
+                    t_disp,
+                    materiality_df=st.session_state.get('materiality_df', pd.DataFrame()),
+                    overall_materiality=overall_issue_mat,
+                    top_n=top_n_issue
+                )
+                if not issue_df.empty:
+                    st.write(f"Нэгтгэсэн асуудлын мөр: **{len(issue_df):,}**")
+                    st.dataframe(issue_df, use_container_width=True, hide_index=True, height=320)
+                    st.download_button(
+                        "📥 Асуудлын бүртгэлийн мөрүүд CSV",
+                        issue_df.to_csv(index=False).encode('utf-8-sig'),
+                        "issue_register_ai_rows.csv",
+                        "text/csv",
+                        key='dl_issue_rows_csv'
+                    )
+                    if issue_template is not None:
+                        try:
+                            issue_template.seek(0)
+                            wb_tmp = pd.ExcelFile(issue_template)
+                            sheet_options = [s for s in wb_tmp.sheet_names if s != 'НЭГТГЭСЭН-АБ'] or wb_tmp.sheet_names
+                            issue_template.seek(0)
+                            sel_sheet = st.selectbox("Загвар sheet сонгох", sheet_options, key='issue_template_sheet_txn')
+                            issue_xlsx = build_issue_register_workbook(issue_template, issue_df, target_sheet=sel_sheet, insert_row=12)
+                            st.download_button(
+                                "📥 ААБ 5.3-д шингээсэн Excel татах",
+                                issue_xlsx,
+                                "Асуудлын_бүртгэл_5_3_AI.xlsx",
+                                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                key='dl_issue_workbook'
+                            )
+                        except Exception as e:
+                            st.warning(f"⚠️ Асуудлын бүртгэлийн файлыг боловсруулахад алдаа гарлаа: {e}")
+
             next_idx += 1
 
             with all_tabs[next_idx]:
