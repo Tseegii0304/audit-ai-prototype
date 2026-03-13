@@ -292,6 +292,97 @@ def process_edt(file_obj, report_year):
                 'month':tx_date[:7] if len(tx_date)>=7 else ''})
         return pd.DataFrame(rows_out, columns=EDT_COLUMNS), len(rows_out)
 
+    # ═══ Parser 4: Монголын ерөнхий журнал (Д/д | Огноо | Дугаар | Утга | Данс | Дебет | Кредит) ═══
+    def _parse_mongolian_journal(ws):
+        """Монголын стандарт ерөнхий журнал формат:
+        Row ~8: Д/д | Баримтын | | Гүйлгээний утга | Харьцсан данс | Дүн |
+        Row ~9: | Огноо | Дугаар | | | Дебет | Кредит
+        Data: seq | date | doc | desc | account | debit | credit
+        """
+        all_rows = []
+        for i, row in enumerate(ws.iter_rows(values_only=True)):
+            all_rows.append(list(row))
+            if i >= 10000: break
+        if len(all_rows) < 10:
+            return pd.DataFrame(columns=EDT_COLUMNS), 0
+
+        # Гарчиг олох: "Д/д" эсвэл "Дебет" + "Кредит" агуулсан мөрийг хайна
+        data_start = None
+        for i in range(min(20, len(all_rows))):
+            row_text = ' '.join(str(c).strip().lower() for c in all_rows[i] if c is not None)
+            if 'д/д' in row_text or ('дебет' in row_text and 'кредит' in row_text):
+                # Дараагийн мөр нь "Огноо" "Дугаар" агуулж магадгүй (2 мөрт гарчиг)
+                if i + 1 < len(all_rows):
+                    next_text = ' '.join(str(c).strip().lower() for c in all_rows[i+1] if c is not None)
+                    if 'огноо' in next_text or 'дугаар' in next_text:
+                        data_start = i + 2
+                    else:
+                        data_start = i + 1
+                else:
+                    data_start = i + 1
+                break
+
+        if data_start is None:
+            return pd.DataFrame(columns=EDT_COLUMNS), 0
+
+        # Дебет, кредит баганын индексийг олох
+        # Гарчигын мөрүүдээс "Дебет", "Кредит" хайна
+        debit_col, credit_col = None, None
+        for check_row in range(max(0, data_start - 3), data_start):
+            for j, cell in enumerate(all_rows[check_row]):
+                if cell is None: continue
+                cl = str(cell).strip().lower()
+                if cl in ('дебет', 'дебит', 'debit', 'дүн') and debit_col is None:
+                    debit_col = j
+                elif cl in ('кредит', 'кредит', 'credit') and credit_col is None:
+                    credit_col = j
+
+        # Хэрэв олдохгүй бол 7 баганатай бол F=5, G=6 гэж таамаглана
+        if debit_col is None or credit_col is None:
+            max_cols = max(len(r) for r in all_rows[data_start:data_start+5]) if all_rows[data_start:data_start+5] else 0
+            if max_cols >= 7:
+                debit_col = debit_col or 5
+                credit_col = credit_col or 6
+            else:
+                return pd.DataFrame(columns=EDT_COLUMNS), 0
+
+        rows_out = []
+        for row in all_rows[data_start:]:
+            if not row or all(c is None or str(c).strip() == '' for c in row): continue
+            # A=seq, B=date, C=doc, D=desc, E=account, F=debit, G=credit
+            c0 = row[0] if len(row) > 0 else None
+            if c0 is None: continue
+            # Д/д нь тоо байх ёстой
+            try:
+                int(float(c0))
+            except:
+                # "Нийт", "Дүн" гэх мэт мөрийг алгасна
+                s0 = str(c0).strip()
+                if any(s0.startswith(x) for x in ['Нийт','Дүн','Журнал','Ерөнхий','Бүгд']):
+                    continue
+                continue
+
+            tx_date = _to_date(row[1] if len(row) > 1 else '')
+            doc_no = str(row[2]).strip() if len(row) > 2 and row[2] is not None else ''
+            desc = str(row[3]).strip() if len(row) > 3 and row[3] is not None else ''
+            acct = str(row[4]).strip() if len(row) > 4 and row[4] is not None else ''
+            db = safe_float(row[debit_col]) if debit_col < len(row) else 0.0
+            cr = safe_float(row[credit_col]) if credit_col < len(row) else 0.0
+
+            if db == 0 and cr == 0: continue
+            if not acct or acct in ('None','nan',''): acct = '000'
+
+            rows_out.append({
+                'report_year': str(report_year), 'account_code': acct, 'account_name': '',
+                'transaction_no': str(len(rows_out) + 1), 'transaction_date': tx_date,
+                'journal_no': '', 'document_no': doc_no,
+                'counterparty_name': '', 'counterparty_id': '',
+                'transaction_description': desc,
+                'debit_mnt': db, 'credit_mnt': cr, 'balance_mnt': 0.0,
+                'month': tx_date[:7] if len(tx_date) >= 7 else ''
+            })
+        return pd.DataFrame(rows_out, columns=EDT_COLUMNS), len(rows_out)
+
     # ═══ Бүх sheet, бүх parser-ийг оролдоно ═══
     try:
         file_obj.seek(0)
@@ -300,7 +391,7 @@ def process_edt(file_obj, report_year):
         best_cnt = 0
         for sname in wb.sheetnames:
             ws = wb[sname]
-            for parser in (_parse_standard_sheet, _parse_dual_entry_sheet, _parse_rowwise_sheet):
+            for parser in (_parse_mongolian_journal, _parse_standard_sheet, _parse_dual_entry_sheet, _parse_rowwise_sheet):
                 try:
                     df_try, cnt_try = parser(ws)
                 except Exception:
@@ -774,13 +865,13 @@ def detect_file_type(f):
     name_check = fname_orig.lower().replace('_', ' ').replace('-', ' ')
     # ЕДТ / Ерөнхий журнал / Journal
     edt_keywords = ['ерөнхий журнал', 'ерөнхий дэвтэр', 'едт', 'edt', 'general ledger', 'general journal',
-                    'еренхий журнал', 'journal gc', 'journal entry', 'journal entries']
+                    'еренхий журнал', 'journal', 'journal entry', 'journal entries']
     for kw in edt_keywords:
         if kw in name_check:
             return 'edt', year
     # ГҮЙЛГЭЭ_БАЛАНС / Trial Balance / Journal TB
     tb_keywords = ['гүйлгээ баланс', 'гүйлгээ_баланс', 'гуйлгээ баланс', 'trial balance',
-                   'гүйлгэ баланс', 'гуйлгэ баланс', 'journal, tb', 'journal tb']
+                   'гүйлгэ баланс', 'гуйлгэ баланс']
     for kw in tb_keywords:
         if kw in name_check:
             return 'raw_tb', year
