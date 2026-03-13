@@ -1,5 +1,5 @@
 """
-Аудитын эрсдэл илрүүлэх хиймэл оюуны систем v4.0
+Аудитын эрсдэл илрүүлэх хиймэл оюуны систем v4.1
 TB + Ledger + Part1 → Бүрэн шинжилгээ
 pip install streamlit pandas numpy scikit-learn plotly openpyxl
 streamlit run audit_app.py
@@ -18,17 +18,16 @@ from sklearn.metrics import precision_score, recall_score, f1_score, roc_auc_sco
 import warnings, io, re, gzip
 from datetime import datetime
 from collections import Counter
-from typing import Dict, List, Tuple
 warnings.filterwarnings('ignore')
 from tab_descriptions import TabDescriptions
 td = TabDescriptions()
-st.set_page_config(page_title="Аудитын эрсдэл илрүүлэх систем v4.0", page_icon="🔍", layout="wide")
+st.set_page_config(page_title="Аудитын эрсдэл илрүүлэх систем v4.1", page_icon="🔍", layout="wide")
 st.markdown('<h1 style="text-align:center;color:#1565c0">🔍 Аудитын эрсдэл илрүүлэх хиймэл оюуны систем</h1>', unsafe_allow_html=True)
 st.markdown('<p style="text-align:center;color:#666;font-size:14px">Гүйлгээ-баланс + Ерөнхий журнал → Дансны болон гүйлгээний түвшний эрсдэл илрүүлэлт • Материаллаг байдлын тооцоо</p>', unsafe_allow_html=True)
 
 with st.sidebar:
     st.header("📌 Системийн цэс")
-    page = st.radio("Үндсэн цэс:", ["1️⃣ Өгөгдөл оруулах", "2️⃣ Эрсдэлийн шинжилгээ", "3️⃣ Материаллаг байдлын тооцоо"])
+    page = st.radio("Үндсэн цэс:", ["1️⃣ Өгөгдөл оруулах, бэлтгэх", "2️⃣ Эрсдэлийн шинжилгээ", "3️⃣ Материаллаг байдлын тооцоо"])
 
 ACCT_RE_B = re.compile(r'Данс:\s*\[([^\]]+)\]\s*(.*)')
 ACCT_RE_P = re.compile(r'Данс:\s*(\d{3}-\d{2}-\d{2}-\d{3})\s+(.*)')
@@ -49,99 +48,6 @@ def safe_float(v):
         return float(v)
     except Exception:
         return 0.0
-
-def normalize_account_code(v):
-    s = str(v).strip() if v is not None else ''
-    if not s or s.lower() in ('nan', 'none'):
-        return ''
-    return re.sub(r'[^0-9]', '', s)
-
-
-def extract_account_mapping(file_obj):
-    """Тусдаа дансны код-нэрийн файлаас mapping гаргана."""
-    import openpyxl
-    rows = []
-    try:
-        file_obj.seek(0)
-        wb = openpyxl.load_workbook(file_obj, read_only=True, data_only=True)
-        for sname in wb.sheetnames:
-            ws = wb[sname]
-            for row in ws.iter_rows(values_only=True):
-                if not row:
-                    continue
-                code = normalize_account_code(row[0] if len(row) > 0 else None)
-                if not code or len(code) > 12:
-                    continue
-                name = ''
-                for cell in row[1:6]:
-                    if cell is None:
-                        continue
-                    txt = str(cell).strip()
-                    if not txt or txt.lower() in ('nan', 'none'):
-                        continue
-                    if any(k in txt.lower() for k in ['дүн', 'нийт', 'төгрөгөөр', 'тайлан', 'санхүүгийн байдлын']):
-                        continue
-                    # цэвэр код шиг харагдаж байвал нэр гэж үзэхгүй
-                    if normalize_account_code(txt) == txt and len(txt) >= 6:
-                        continue
-                    name = txt
-                    break
-                if name:
-                    rows.append({'account_code_map': code, 'account_name_map': name})
-        wb.close()
-    except Exception:
-        return pd.DataFrame(columns=['account_code_map', 'account_name_map'])
-
-    if not rows:
-        return pd.DataFrame(columns=['account_code_map', 'account_name_map'])
-
-    mp = pd.DataFrame(rows).drop_duplicates(subset=['account_code_map'], keep='first').copy()
-    mp['code_len'] = mp['account_code_map'].astype(str).str.len()
-    mp = mp.sort_values(['code_len', 'account_code_map'], ascending=[False, True]).reset_index(drop=True)
-    return mp[['account_code_map', 'account_name_map']]
-
-
-def apply_account_mapping(df, mapping_df):
-    """Account name хоосон мөрүүдийг mapping файлаас exact + longest-prefix байдлаар нөхнө."""
-    if df is None or df.empty or mapping_df is None or mapping_df.empty or 'account_code' not in df.columns:
-        return df
-
-    out = df.copy()
-    if 'account_name' not in out.columns:
-        out['account_name'] = ''
-
-    out['account_name'] = out['account_name'].fillna('').astype(str)
-    out['account_code_norm'] = out['account_code'].astype(str).map(normalize_account_code)
-
-    mp = mapping_df.copy()
-    mp['account_code_map'] = mp['account_code_map'].astype(str).map(normalize_account_code)
-    mp['account_name_map'] = mp['account_name_map'].fillna('').astype(str)
-    mp = mp[(mp['account_code_map'] != '') & (mp['account_name_map'] != '')].drop_duplicates('account_code_map')
-    if mp.empty:
-        return out.drop(columns=['account_code_norm'], errors='ignore')
-
-    exact_map = dict(zip(mp['account_code_map'], mp['account_name_map']))
-    codes_sorted = sorted(exact_map.keys(), key=len, reverse=True)
-
-    resolved = {}
-    for code in out['account_code_norm'].dropna().unique().tolist():
-        code = str(code)
-        if not code:
-            continue
-        if code in exact_map:
-            resolved[code] = exact_map[code]
-            continue
-        for mcode in codes_sorted:
-            if code.startswith(mcode):
-                resolved[code] = exact_map[mcode]
-                break
-
-    blank_before = out['account_name'].str.strip().eq('')
-    out.loc[blank_before, 'account_name'] = out.loc[blank_before, 'account_code_norm'].map(resolved).fillna('')
-    out['account_name_source'] = 'original'
-    out.loc[blank_before & out['account_name'].str.strip().ne(''), 'account_name_source'] = 'mapped'
-    out.loc[out['account_name'].str.strip().eq(''), 'account_name_source'] = 'blank'
-    return out.drop(columns=['account_code_norm'], errors='ignore')
 
 def process_raw_tb(file_obj):
     import openpyxl
@@ -497,15 +403,12 @@ def process_edt(file_obj, report_year):
     except Exception:
         return pd.DataFrame(columns=EDT_COLUMNS), 0
 
-def generate_part1(df_led, year, overall_materiality=None):
+def generate_part1(df_led, year):
     df = df_led.copy()
     yr = str(year)
     df['debit_mnt'] = pd.to_numeric(df['debit_mnt'], errors='coerce').fillna(0)
     df['credit_mnt'] = pd.to_numeric(df['credit_mnt'], errors='coerce').fillna(0)
     df['balance_mnt'] = pd.to_numeric(df['balance_mnt'], errors='coerce').fillna(0)
-    df['amount'] = df['debit_mnt'].abs() + df['credit_mnt'].abs()
-    df['day'] = pd.to_numeric(df['transaction_date'].astype(str).str[8:10], errors='coerce').fillna(15)
-    df['month_num'] = pd.to_numeric(df['transaction_date'].astype(str).str[5:7], errors='coerce').fillna(6)
     monthly = df.groupby(['month', 'account_code']).agg(
         total_debit_mnt=('debit_mnt', 'sum'),
         total_credit_mnt=('credit_mnt', 'sum'),
@@ -517,67 +420,30 @@ def generate_part1(df_led, year, overall_materiality=None):
     acct = df.groupby('account_code').agg(
         total_debit_mnt=('debit_mnt', 'sum'),
         total_credit_mnt=('credit_mnt', 'sum'),
-        closing_balance_mnt=('balance_mnt', 'last'),
-        transaction_count=('amount', 'count'),
-        max_txn=('amount', 'max')
+        closing_balance_mnt=('balance_mnt', 'last')
     ).reset_index()
     acct['account_name'] = acct['account_code'].map(anames)
     acct.insert(0, 'report_year', yr)
-
     rm = df.groupby(['month', 'account_code', 'counterparty_name']).agg(
-        transaction_count=('amount', 'count'),
+        transaction_count=('debit_mnt', 'count'),
         total_debit=('debit_mnt', 'sum'),
         total_credit=('credit_mnt', 'sum'),
-        max_amount=('amount', 'max'),
-        round_txn=('amount', lambda s: int(((s >= 1e6) & ((s % 1e6) == 0)).sum())),
-        month_end_txn=('day', lambda s: int((s >= 28).sum()))
     ).reset_index()
     rm['total_amount_mnt'] = rm['total_debit'].abs() + rm['total_credit'].abs()
     rm.insert(0, 'report_year', yr)
-
     p75a = rm['total_amount_mnt'].quantile(0.75)
     p75c = rm['transaction_count'].quantile(0.75)
-    p90m = rm['max_amount'].quantile(0.90)
-    p75_round = rm['round_txn'].quantile(0.75)
-    p75_me = rm['month_end_txn'].quantile(0.75)
-
     rm['risk_flag_large_txn'] = (rm['total_amount_mnt'] > p75a).astype(int)
     rm['risk_flag_high_frequency'] = (rm['transaction_count'] > p75c).astype(int)
-    rm['risk_flag_peak_txn'] = (rm['max_amount'] > p90m).astype(int)
-    rm['risk_flag_round_number'] = (rm['round_txn'] > p75_round).astype(int)
-    rm['risk_flag_month_end'] = (rm['month_end_txn'] > p75_me).astype(int)
-
-    if overall_materiality and overall_materiality > 0:
-        rm['materiality_ratio'] = rm['total_amount_mnt'] / float(overall_materiality)
-        rm['risk_flag_material'] = (rm['materiality_ratio'] >= 1).astype(int)
-    else:
-        rm['materiality_ratio'] = 0.0
-        rm['risk_flag_material'] = 0
-
-    rm['risk_score'] = (
-        rm['risk_flag_large_txn'] * 2
-        + rm['risk_flag_high_frequency'] * 2
-        + rm['risk_flag_peak_txn'] * 2
-        + rm['risk_flag_round_number']
-        + rm['risk_flag_month_end']
-        + rm['risk_flag_material'] * 3
-    )
+    rm['risk_score'] = rm['risk_flag_large_txn'] + rm['risk_flag_high_frequency']
     rm['risk_level'] = pd.cut(
         rm['risk_score'],
-        bins=[-0.1, 2.5, 5.5, 99],
+        bins=[-0.1, 0.5, 1.5, 99],
         labels=['Бага', 'Дунд', 'Өндөр']
     ).astype(str)
     rm['account_category'] = rm['account_code'].str[:1].map(
         {'1': 'Хөрөнгө', '2': 'Өр', '3': 'Эздийн өмч', '4': 'Зардал', '5': 'Орлого', '6': 'Орлого', '7': 'Зардал'}
     ).fillna('')
-    rm['audit_procedure'] = rm.apply(
-        lambda r: recommend_audit_procedures(r['risk_level'], classify_account_family(r['account_code']), float(r.get('materiality_ratio', 0) or 0), [
-            'month_end' if r['risk_flag_month_end'] else '',
-            'round' if r['risk_flag_round_number'] else ''
-        ]),
-        axis=1
-    )
-
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine='openpyxl') as w:
         monthly.to_excel(w, sheet_name='02_MONTHLY_SUMMARY', index=False)
@@ -884,10 +750,11 @@ def engineer_txn_features(d):
 
     return d
 
-def run_txn_anomaly(df, cont=0.05, mat_df=None):
-    """Гүйлгээний аномали илрүүлэлт + материаллаг байдлын давхар үнэлгээ."""
+def run_txn_anomaly(df, cont=0.05):
+    """Гүйлгээний аномали илрүүлэлт."""
     feats = ['log_amount','acct_cat_num','benford_dev','is_round','amt_zscore','cp_rare','pair_rare',
              'desc_empty','is_month_end','is_year_end','is_dup','is_debit','desc_mismatch','name_no_overlap','dir_mismatch']
+    # Бүх feature багана байгаа эсэхийг шалгах
     for f in feats:
         if f not in df.columns:
             df[f] = 0
@@ -898,58 +765,24 @@ def run_txn_anomaly(df, cont=0.05, mat_df=None):
     try:
         z = np.abs(StandardScaler().fit_transform(X))
         df['txn_zscore_flag'] = (z.max(axis=1)>2.5).astype(int)
-    except Exception:
+    except:
         df['txn_zscore_flag'] = 0
-
-    df = attach_materiality_to_transactions(df, mat_df)
-    df['benford_flag'] = (df['benford_dev'] > max(0.05, float(df['benford_dev'].quantile(0.90) if len(df) > 10 else 0.05))).astype(int)
-    df['large_amount_flag'] = (df['amt_zscore'].abs() > 3).astype(int)
-    df['period_end_flag'] = ((df['is_month_end'] == 1) | (df['is_year_end'] == 1)).astype(int)
-
+    # Эрсдэлийн жинлэсэн оноо (ISA стандарттай нийцүүлсэн)
     df['txn_risk'] = (
-        df['txn_anomaly']*3
-        + df['txn_zscore_flag']*2
-        + df['is_dup']*2
-        + df['cp_rare']
-        + df['pair_rare']
-        + df['large_amount_flag']*2
-        + df['desc_empty']
-        + df['desc_mismatch']*2
-        + df['name_no_overlap']
-        + df['dir_mismatch']*2
-        + df['materiality_flag']*3
-        + df['trivial_exceed_flag']
-        + df['benford_flag']
-        + df['period_end_flag']
+        df['txn_anomaly'] * 3 +         # IF аномали (ISA 240)
+        df['txn_zscore_flag'] * 2 +       # Z-score хэт хазайлт
+        df['is_dup'] * 3 +               # Давхардсан гүйлгээ (ISA 240) — жин нэмсэн
+        df['cp_rare'] * 1 +              # Ховор харилцагч (ISA 550)
+        df['pair_rare'] * 1 +            # Ховор данс×харилцагч хос (ISA 550)
+        (df['amt_zscore'].abs() > 3).astype(int) * 2 +  # Дундажаас хэт зөрсөн (ISA 520)
+        df['desc_empty'] * 2 +           # Тайлбаргүй гүйлгээ (ISA 500) — жин нэмсэн
+        df['desc_mismatch'] * 2 +        # Тайлбар↔данс зөрчил (ISA 500)
+        df['name_no_overlap'] * 1 +      # Нэр давхцахгүй (ISA 500)
+        df['dir_mismatch'] * 3 +         # Чиглэлийн зөрчил (ISA 240) — жин нэмсэн
+        df.get('is_round', pd.Series(0, index=df.index)).astype(int) * 1  # Тэгс тоо
     )
     df['txn_risk_level'] = pd.cut(df['txn_risk'], bins=[-1,3,7,12,100],
         labels=['🟢 Бага','🟡 Дунд','🟠 Өндөр','🔴 Маш өндөр'])
-
-    def _txn_proc(r):
-        flags = []
-        if int(r.get('is_dup', 0)) == 1: flags.append('duplicate')
-        if int(r.get('benford_flag', 0)) == 1: flags.append('benford')
-        if int(r.get('is_round', 0)) >= 1: flags.append('round')
-        if int(r.get('period_end_flag', 0)) == 1: flags.append('month_end')
-        if int(r.get('is_year_end', 0)) == 1: flags.append('year_end')
-        return recommend_audit_procedures(r.get('txn_risk_level', ''), classify_account_family(r.get('account_code', '')), float(r.get('materiality_ratio', 0) or 0), flags)
-
-    df['audit_procedure'] = df.apply(_txn_proc, axis=1)
-    df['why_flagged'] = df.apply(
-        lambda r: ', '.join([
-            x for x, cond in [
-                ('ML anomaly', r.get('txn_anomaly', 0) == 1),
-                ('Z-score', r.get('txn_zscore_flag', 0) == 1),
-                ('Duplicate', r.get('is_dup', 0) == 1),
-                ('Material', r.get('materiality_flag', 0) == 1),
-                ('Description mismatch', r.get('desc_mismatch', 0) == 1),
-                ('Direction mismatch', r.get('dir_mismatch', 0) == 1),
-                ('Period-end', r.get('period_end_flag', 0) == 1),
-                ('Benford', r.get('benford_flag', 0) == 1),
-            ] if cond
-        ]),
-        axis=1
-    )
     return df, feats
 
 def run_ml(tb_all, cont, n_est):
@@ -972,7 +805,12 @@ def run_ml(tb_all, cont, n_est):
         df['log_abs_change'] = np.log1p(pd.to_numeric(df['net_change_signed'], errors='coerce').fillna(0).abs())
     else:
         df['log_abs_change'] = np.log1p((pd.to_numeric(df['closing_debit'], errors='coerce').fillna(0) - pd.to_numeric(df['opening_debit'], errors='coerce').fillna(0)).abs())
-    feats = ['cat_num', 'log_turn_d', 'log_turn_c', 'log_close_d', 'log_close_c', 'turn_ratio', 'log_abs_change', 'year']
+    # ISA 520: Аналитик горим — өсөлтийн хурд нэмэх
+    opening_bal = pd.to_numeric(df.get('opening_debit', 0), errors='coerce').fillna(0).abs() + pd.to_numeric(df.get('opening_credit', 0), errors='coerce').fillna(0).abs()
+    closing_bal = pd.to_numeric(df.get('closing_debit', 0), errors='coerce').fillna(0).abs() + pd.to_numeric(df.get('closing_credit', 0), errors='coerce').fillna(0).abs()
+    df['growth_rate'] = np.where(opening_bal > 0, (closing_bal - opening_bal) / opening_bal, 0)
+    df['growth_rate'] = df['growth_rate'].clip(-10, 10).fillna(0)
+    feats = ['cat_num', 'log_turn_d', 'log_turn_c', 'log_close_d', 'log_close_c', 'turn_ratio', 'log_abs_change', 'growth_rate', 'year']
     X = df[feats].fillna(0).replace([np.inf, -np.inf], 0)
     iso = IsolationForest(contamination=min(max(cont, 0.01), 0.4), random_state=42, n_estimators=200)
     df['iso_anomaly'] = (iso.fit_predict(X) == -1).astype(int)
@@ -1127,202 +965,165 @@ def detect_file_type(f):
         return 'unknown', year
 
 
-def _safe_numeric(series):
-    return pd.to_numeric(series, errors='coerce').fillna(0.0)
+def parse_account_names(file_obj):
+    """Дансны код + нэрийн лавлах файл уншина.
+    Формат: A баганад дансны код (1, 31, 312, 3121, 31213, ...), B баганад нэр.
+    Санхүүгийн байдлын тайлан (СТ-1А) эсвэл дансны жагсаалт файл дэмжинэ.
+    """
+    import openpyxl
+    try:
+        file_obj.seek(0)
+        wb = openpyxl.load_workbook(file_obj, read_only=True, data_only=True)
+        ws = wb[wb.sheetnames[0]]
+        code_map = {}
+        for row in ws.iter_rows(values_only=True):
+            c0 = str(row[0]).strip() if row[0] is not None else ''
+            c1 = str(row[1]).strip() if len(row) > 1 and row[1] is not None else ''
+            if not c0 or not c1:
+                continue
+            # Зөвхөн тоон код авах (1, 31, 312, 3121, 31213, ...)
+            c0_clean = re.sub(r'[^0-9]', '', c0)
+            if c0_clean and len(c0_clean) >= 1:
+                code_map[c0_clean] = c1.strip()
+        wb.close()
+        return code_map
+    except Exception:
+        return {}
 
+def merge_account_names(df, code_map):
+    """Гүйлгээний DataFrame-д дансны нэрийг prefix matching-аар нэгтгэнэ.
+    Жишээ: 312130201 → 31213 → 'Арилжааны банк дахь харилцах'
+    """
+    if not code_map or 'account_code' not in df.columns:
+        return df
+    d = df.copy()
 
-def classify_account_family(account_code: str) -> str:
-    s = str(account_code)[:1]
-    return {
-        '1': 'assets',
-        '2': 'liabilities',
-        '3': 'equity',
-        '4': 'expense',
-        '5': 'revenue',
-        '6': 'revenue',
-        '7': 'expense',
-        '8': 'expense',
-    }.get(s, 'other')
+    def _find_name(code):
+        code_str = re.sub(r'[^0-9]', '', str(code))
+        # Урт prefix-ээс богино руу хайна (хамгийн нарийвчлалтай нэрийг олно)
+        for length in range(len(code_str), 0, -1):
+            prefix = code_str[:length]
+            if prefix in code_map:
+                return code_map[prefix]
+        return ''
 
+    # Хоосон эсвэл байхгүй нэртэй мөрүүдэд нэр нэмэх
+    if 'account_name' not in d.columns:
+        d['account_name'] = ''
+    mask = d['account_name'].fillna('').str.strip() == ''
+    if mask.any():
+        d.loc[mask, 'account_name'] = d.loc[mask, 'account_code'].apply(_find_name)
+
+    return d
+
+def detect_account_names_file(file_obj):
+    """Дансны нэрийн лавлах файл мөн эсэхийг шалгана."""
+    import openpyxl
+    try:
+        file_obj.seek(0)
+        wb = openpyxl.load_workbook(file_obj, read_only=True, data_only=True)
+        ws = wb[wb.sheetnames[0]]
+        score = 0
+        for i, row in enumerate(ws.iter_rows(values_only=True)):
+            if i > 20: break
+            row_text = ' '.join(str(c).strip().lower() for c in row if c is not None)
+            if 'дансны код' in row_text: score += 3
+            if 'балансын үзүүлэлт' in row_text or 'дансны нэр' in row_text: score += 3
+            if 'санхүүгийн байдл' in row_text or 'ст-1' in row_text: score += 2
+            if 'эхний үлдэгдэл' in row_text or 'эцсийн үлдэгдэл' in row_text: score += 1
+        wb.close()
+        file_obj.seek(0)
+        return score >= 3
+    except:
+        file_obj.seek(0)
+        return False
 
 def materiality_base_from_tb(tb_df):
-    meta = calculate_materiality_framework(tb_df, overall_override=None)
-    return float(meta.get('overall_materiality', 0.0))
-
-
-def estimate_benchmarks_from_tb(tb_df: pd.DataFrame) -> Dict[str, float]:
     if tb_df is None or tb_df.empty:
-        return {'assets': 0.0, 'revenue': 0.0, 'expense': 0.0, 'equity': 0.0}
-
-    d = tb_df.copy()
-    for c in ['closing_debit','closing_credit','turnover_debit','turnover_credit','account_code']:
-        if c not in d.columns:
-            d[c] = 0.0 if c != 'account_code' else ''
-
-    d['account_family'] = d['account_code'].astype(str).map(classify_account_family)
-    d['closing_abs'] = _safe_numeric(d['closing_debit']).abs() + _safe_numeric(d['closing_credit']).abs()
-    d['turnover_abs'] = _safe_numeric(d['turnover_debit']).abs() + _safe_numeric(d['turnover_credit']).abs()
-
-    assets = float(d.loc[d['account_family'] == 'assets', 'closing_abs'].sum())
-    equity = float(d.loc[d['account_family'] == 'equity', 'closing_abs'].sum())
-    revenue = float(d.loc[d['account_family'] == 'revenue', 'turnover_abs'].sum())
-    expense = float(d.loc[d['account_family'] == 'expense', 'turnover_abs'].sum())
-    return {'assets': assets, 'revenue': revenue, 'expense': expense, 'equity': equity}
-
-
-def calculate_materiality_framework(tb_df: pd.DataFrame, overall_override: float | None = None, benchmark_preference: str = 'auto') -> Dict[str, float | str]:
-    benchmarks = estimate_benchmarks_from_tb(tb_df)
-    candidates: List[Tuple[str, float, float, float]] = []
-
-    if benchmarks['revenue'] > 0:
-        candidates.append(('Revenue / Орлого', benchmarks['revenue'], 0.01, benchmarks['revenue'] * 0.01))
-    if benchmarks['assets'] > 0:
-        candidates.append(('Total assets / Нийт хөрөнгө', benchmarks['assets'], 0.01, benchmarks['assets'] * 0.01))
-    if benchmarks['expense'] > 0:
-        candidates.append(('Expense / Зардал', benchmarks['expense'], 0.01, benchmarks['expense'] * 0.01))
-    if benchmarks['equity'] > 0:
-        candidates.append(('Equity / Өмч', benchmarks['equity'], 0.02, benchmarks['equity'] * 0.02))
-
-    if overall_override is not None and overall_override > 0:
-        overall = float(overall_override)
-        chosen_name, chosen_value, chosen_pct = 'Manual override / Гараар оруулсан', overall, np.nan
-    elif candidates:
-        if benchmark_preference != 'auto':
-            match = [c for c in candidates if benchmark_preference.lower() in c[0].lower()]
-            chosen_name, chosen_value, chosen_pct, overall = match[0] if match else max(candidates, key=lambda x: x[3])
-        else:
-            # Conservative but practical: pick the median of candidate materialities if 3+, else the minimum of top-2.
-            vals = sorted(candidates, key=lambda x: x[3])
-            if len(vals) >= 3:
-                chosen_name, chosen_value, chosen_pct, overall = vals[len(vals)//2]
-            else:
-                chosen_name, chosen_value, chosen_pct, overall = vals[0]
-    else:
-        overall = 0.0
-        chosen_name, chosen_value, chosen_pct = 'No benchmark / Бенчмарк олдсонгүй', 0.0, np.nan
-
-    performance = overall * 0.75
-    trivial = overall * 0.05
-    return {
-        'overall_materiality': float(overall),
-        'performance_materiality': float(performance),
-        'trivial_threshold': float(trivial),
-        'benchmark_name': chosen_name,
-        'benchmark_value': float(chosen_value),
-        'benchmark_pct': float(chosen_pct) if pd.notna(chosen_pct) else np.nan,
-        'assets_benchmark': float(benchmarks['assets']),
-        'revenue_benchmark': float(benchmarks['revenue']),
-        'expense_benchmark': float(benchmarks['expense']),
-        'equity_benchmark': float(benchmarks['equity']),
-    }
-
-
-def recommend_audit_procedures(risk_level: str, account_family: str, materiality_ratio: float, flags: List[str] | None = None) -> str:
-    flags = flags or []
-    procedures: List[str] = []
-
-    if materiality_ratio >= 1:
-        procedures.append('Дэлгэрэнгүй баримтын шалгалт')
-    if materiality_ratio >= 0.5:
-        procedures.append('Эх баримт, журнал, дэмжих баримт тулгах')
-    if 'month_end' in flags or 'year_end' in flags:
-        procedures.append('Cut-off тест')
-    if 'duplicate' in flags:
-        procedures.append('Давхардсан бичилтийн баримт тулгалт')
-    if 'benford' in flags or 'round' in flags:
-        procedures.append('Journal entry testing')
-    if account_family == 'assets':
-        procedures.append('Оршин байгаа эсэх / баталгаажуулалт')
-    elif account_family == 'liabilities':
-        procedures.append('Бүрэн бүтэн байдлын тест')
-    elif account_family == 'revenue':
-        procedures.append('Орлогын зөв үеийн хүлээн зөвшөөрөлт')
-    elif account_family == 'expense':
-        procedures.append('Зөв ангилал ба зөвшөөрөл шалгах')
-
-    if 'Өндөр' in str(risk_level) or 'Маш өндөр' in str(risk_level):
-        procedures.append('Дээжлэлгүйгээр 100% review эсвэл зорилтот түүвэр')
-
-    uniq = []
-    for p in procedures:
-        if p not in uniq:
-            uniq.append(p)
-    return ' • '.join(uniq[:6])
-
+        return 0.0
+    candidates = []
+    for c in ['turnover_debit','turnover_credit','closing_debit','closing_credit','opening_debit','opening_credit']:
+        if c in tb_df.columns:
+            candidates.append(pd.to_numeric(tb_df[c], errors='coerce').fillna(0).abs().sum())
+    return float(max(candidates)) if candidates else 0.0
 
 def build_materiality_by_account(tb_df, overall_materiality, performance_ratio=0.75, trivial_ratio=0.05):
+    """ISA 320 + ISA 330: Данс тус бүрийн материаллаг байдал + аудитын горим.
+    Эрсдэлийн коэффициент (ISA 320.A12): Дансны өөрчлөлт, ангиллаас хамааран залруулна.
+    Аудитын горим (ISA 330): Эрсдэлийн түвшнээс хамааран горим санал болгоно.
+    """
     if tb_df is None or tb_df.empty:
         return pd.DataFrame()
     d = tb_df.copy()
-    for c in ['account_code','account_name','closing_debit','closing_credit','turnover_debit','turnover_credit','opening_debit','opening_credit','net_change_signed']:
+    for c in ['account_code','account_name','closing_debit','closing_credit',
+              'turnover_debit','turnover_credit','opening_debit','opening_credit']:
         if c not in d.columns:
             d[c] = '' if c in ['account_code','account_name'] else 0.0
+    for c in ['closing_debit','closing_credit','turnover_debit','turnover_credit','opening_debit','opening_credit']:
+        d[c] = pd.to_numeric(d[c], errors='coerce').fillna(0)
 
-    d['account_family'] = d['account_code'].astype(str).map(classify_account_family)
-    d['closing_abs'] = _safe_numeric(d['closing_debit']).abs() + _safe_numeric(d['closing_credit']).abs()
-    d['turnover_abs'] = _safe_numeric(d['turnover_debit']).abs() + _safe_numeric(d['turnover_credit']).abs()
-    d['opening_abs'] = _safe_numeric(d['opening_debit']).abs() + _safe_numeric(d['opening_credit']).abs()
-    d['change_abs'] = _safe_numeric(d['net_change_signed']).abs()
+    # ── Суурь дүн тооцох ──
+    d['closing_abs'] = d['closing_debit'].abs() + d['closing_credit'].abs()
+    d['turnover_abs'] = d['turnover_debit'].abs() + d['turnover_credit'].abs()
+    d['суурь_дүн'] = np.where(d['closing_abs'] > 0, d['closing_abs'], d['turnover_abs'])
 
-    d['суурь дүн'] = np.where(d['closing_abs'] > 0, d['closing_abs'], np.where(d['turnover_abs'] > 0, d['turnover_abs'], d['opening_abs']))
+    # ── Дансны ангилал (ISA 315) ──
+    d['ангилал'] = d['account_code'].astype(str).str[0].map(
+        {'1':'Хөрөнгө','2':'Өр төлбөр','3':'Эздийн өмч',
+         '4':'Зардал','5':'Орлого','6':'Орлого',
+         '7':'Үйл ажиллагааны зардал','8':'Бусад зардал','9':'Нэгдсэн данс'}
+    ).fillna('Бусад')
 
-    family_weight = {
-        'assets': 1.15,
-        'liabilities': 1.05,
-        'equity': 0.85,
-        'revenue': 1.10,
-        'expense': 1.00,
-        'other': 0.90,
-    }
-    d['family_weight'] = d['account_family'].map(family_weight).fillna(1.0)
-    d['change_factor'] = np.where(d['opening_abs'] > 0, 1 + np.minimum(d['change_abs'] / d['opening_abs'].replace(0, np.nan), 2.0), 1.0).astype(float)
-    d['weighted_base'] = d['суурь дүн'] * d['family_weight'] * d['change_factor'].replace([np.inf, -np.inf], 1.0).fillna(1.0)
-    total_base = float(d['weighted_base'].sum())
-    if total_base <= 0:
-        d['жингийн хувь'] = 1 / max(len(d), 1)
-    else:
-        d['жингийн хувь'] = d['weighted_base'] / total_base
+    # ── Аналитик горим: Өөрчлөлтийн хувь (ISA 520) ──
+    opening = d['opening_debit'].abs() + d['opening_credit'].abs()
+    d['өөрчлөлт_%'] = np.where(opening > 0, (d['суурь_дүн'] - opening) / opening * 100, 0).round(1)
 
-    d['төлөвлөлтийн материаллаг байдал'] = d['жингийн хувь'] * float(overall_materiality)
-    d['гүйцэтгэлийн материаллаг байдал'] = d['төлөвлөлтийн материаллаг байдал'] * float(performance_ratio)
-    d['анхаарах доод дүн'] = d['төлөвлөлтийн материаллаг байдал'] * float(trivial_ratio)
-    d['материаллаг байдлын ангилал'] = pd.cut(
-        d['төлөвлөлтийн материаллаг байдал'],
-        bins=[-0.1, d['төлөвлөлтийн материаллаг байдал'].quantile(0.5), d['төлөвлөлтийн материаллаг байдал'].quantile(0.85), np.inf],
-        labels=['Дунд', 'Өндөр', 'Маш өндөр'],
-        duplicates='drop'
-    ).astype(str)
-    d['audit_focus'] = d.apply(lambda r: recommend_audit_procedures(r['материаллаг байдлын ангилал'], r['account_family'], 1.0, []), axis=1)
+    # ── Эрсдэлийн коэффициент (ISA 320.A12) ──
+    def _risk_coeff(row):
+        pct = abs(row.get('өөрчлөлт_%', 0))
+        cat = str(row.get('account_code', ''))[:1]
+        if pct > 50: return 0.50   # Маш өндөр өөрчлөлт → 2× бага босго
+        if pct > 30 and cat == '1': return 0.60  # Хөрөнгийн өндөр өөрчлөлт
+        if cat in ('5','6','7','8'): return 0.75  # Орлого/зардал субъектив
+        if pct > 20: return 0.75
+        if pct < 5: return 1.20   # Бага эрсдэл → илүү өндөр босго
+        return 1.00
+    d['эрсдэлийн_коэфф'] = d.apply(_risk_coeff, axis=1)
 
-    out = d[[
-        'account_code','account_name','account_family','суурь дүн','weighted_base','жингийн хувь',
-        'төлөвлөлтийн материаллаг байдал','гүйцэтгэлийн материаллаг байдал','анхаарах доод дүн',
-        'материаллаг байдлын ангилал','audit_focus'
-    ]].copy()
-    out = out.sort_values(['төлөвлөлтийн материаллаг байдал','суурь дүн'], ascending=False).reset_index(drop=True)
-    return out
+    # ── Материаллаг байдлын хуваарилалт ──
+    total_base = max(d['суурь_дүн'].sum(), 1)
+    d['жин_%'] = (d['суурь_дүн'] / total_base * 100).round(3)
+    d['зөвшөөрөгдөх_алдаа'] = (d['жин_%'] / 100 * overall_materiality * d['эрсдэлийн_коэфф']).round(0)
+    d['гүйцэтгэлийн_мат'] = (d['зөвшөөрөгдөх_алдаа'] * performance_ratio).round(0)
+    d['анхаарах_доод'] = (d['зөвшөөрөгдөх_алдаа'] * trivial_ratio).round(0)
 
+    # ── Босго давсан эсэх (ISA 320.A12) ──
+    d['босго_давсан'] = np.where(d['суурь_дүн'] > d['зөвшөөрөгдөх_алдаа'], '⚠️ Тийм', '✅ Үгүй')
 
-def attach_materiality_to_transactions(txn_df: pd.DataFrame, mat_df: pd.DataFrame) -> pd.DataFrame:
-    if txn_df is None or txn_df.empty:
-        return pd.DataFrame()
-    d = txn_df.copy()
-    if mat_df is None or mat_df.empty or 'account_code' not in d.columns:
-        d['account_pm'] = 0.0
-        d['account_trivial'] = 0.0
-        d['materiality_ratio'] = 0.0
-        d['materiality_flag'] = 0
-        return d
+    # ── Эрсдэлийн түвшин ──
+    risk_score = d['жин_%'] * (2 - d['эрсдэлийн_коэфф'])
+    d['эрсдэлийн_түвшин'] = pd.cut(risk_score, bins=[-0.001, 1.0, 5.0, 100.0],
+        labels=['Бага', 'Дунд', 'Өндөр']).astype(str)
 
-    m = mat_df[['account_code','гүйцэтгэлийн материаллаг байдал','анхаарах доод дүн']].copy()
-    m.columns = ['account_code','account_pm','account_trivial']
-    d = d.merge(m, on='account_code', how='left')
-    d['account_pm'] = _safe_numeric(d.get('account_pm', 0)).fillna(0)
-    d['account_trivial'] = _safe_numeric(d.get('account_trivial', 0)).fillna(0)
-    d['materiality_ratio'] = np.where(d['account_pm'] > 0, d['amount'] / d['account_pm'], 0.0)
-    d['materiality_flag'] = (d['materiality_ratio'] >= 1.0).astype(int)
-    d['trivial_exceed_flag'] = (d['amount'] >= d['account_trivial']).astype(int)
-    return d
+    # ── ISA 330 аудитын горимын санал ──
+    def _audit_proc(row):
+        if row.get('босго_давсан') == '⚠️ Тийм':
+            return 'Нарийвчилсан шалгалт + Баталгаажуулалт (ISA 505)'
+        lv = row.get('эрсдэлийн_түвшин', 'Бага')
+        if lv == 'Өндөр': return 'Нарийвчилсан шалгалт (ISA 330.18)'
+        if lv == 'Дунд': return 'Шинжилгээний процедур (ISA 520) + Хязгаарлагдмал шалгалт'
+        return 'Шинжилгээний процедур (ISA 520)'
+    d['аудитын_горим'] = d.apply(_audit_proc, axis=1)
+
+    out = d[['account_code','account_name','ангилал','суурь_дүн','turnover_abs',
+        'өөрчлөлт_%','жин_%','эрсдэлийн_коэфф',
+        'зөвшөөрөгдөх_алдаа','гүйцэтгэлийн_мат','анхаарах_доод',
+        'босго_давсан','эрсдэлийн_түвшин','аудитын_горим']].copy()
+    out.columns = ['Дансны код','Дансны нэр','Ангилал','Эцсийн үлдэгдэл','Нийт эргэлт',
+        'Өөрчлөлт %','Жин %','Эрсдэлийн коэфф',
+        'Зөвшөөрөгдөх алдаа ₮','Гүйцэтгэлийн мат ₮','Анхаарах доод ₮',
+        'Босго давсан','Эрсдэлийн түвшин','Аудитын горим (ISA 330)']
+    return out.sort_values('Зөвшөөрөгдөх алдаа ₮', ascending=False).reset_index(drop=True)
 
 
 FILE_TYPE_LABELS = {
@@ -1339,23 +1140,24 @@ if page.startswith("1"):
     <div style="background-color: #E3F2FD; padding: 15px; border-radius: 8px; border-left: 4px solid #1565C0; margin-bottom: 15px;">
         <b>📂 Ямар ч файлыг оруулаарай!</b> Систем автоматаар таниж, зөв формат руу хөрвүүлнэ.<br>
         <span style="color: #555; font-size: 13px;">
-        Дэмжих файлууд: ГҮЙЛГЭЭ_БАЛАНС (.xlsx), Ерөнхий журнал (.xlsx) — хэдэн ч файл, ямар ч дараалал
+        Дэмжих файлууд: Гүйлгээ баланс (.xlsx), Ерөнхий журнал (.xlsx) — хэдэн ч файл, ямар ч дараалал
         </span>
     </div>
     """, unsafe_allow_html=True)
 
-    account_map_file = st.file_uploader("🧾 Дансны код-нэрийн тусдаа файл (сонголтоор)", type=['xlsx'], accept_multiple_files=False, key='acct_map_prep')
-    acct_map_df = pd.DataFrame()
-    if account_map_file is not None:
-        acct_map_df = extract_account_mapping(account_map_file)
-        if acct_map_df.empty:
-            st.warning("⚠️ Дансны код-нэрийн файлаас mapping уншигдсангүй. Формат шалгана уу.")
-        else:
-            st.success(f"✅ Код-нэрийн mapping ачааллаа: {len(acct_map_df):,} мөр")
-            with st.expander("Mapping preview", expanded=False):
-                st.dataframe(acct_map_df.head(20), use_container_width=True, hide_index=True)
-
     uploaded = st.file_uploader("📎 Бүх файлуудаа энд оруулна уу", type=['xlsx', 'csv', 'gz'], accept_multiple_files=True, key='smart_prep')
+
+    # ── Дансны нэрийн лавлах файл ──
+    with st.expander("📋 Дансны нэрийн лавлах файл (заавал биш)", expanded=False):
+        st.markdown("Ерөнхий журналд дансны нэр байхгүй тохиолдолд **Санхүүгийн байдлын тайлан (СТ-1А)** эсвэл **Дансны жагсаалт** файлаас нэрийг нэгтгэнэ.")
+        acct_name_file = st.file_uploader("📎 Дансны код + нэрийн файл", type=['xlsx'], key='acct_names_prep')
+        acct_name_map = {}
+        if acct_name_file:
+            acct_name_map = parse_account_names(acct_name_file)
+            if acct_name_map:
+                st.success(f"✅ {len(acct_name_map)} дансны нэр уншигдлаа")
+            else:
+                st.warning("⚠️ Дансны нэр уншигдсангүй. A баганад код, B баганад нэр байх ёстой.")
 
     if uploaded:
         detected = []
@@ -1387,7 +1189,7 @@ if page.startswith("1"):
                     if 'tb_res' not in st.session_state:
                         st.session_state.tb_res = {}
                     for d in raw_tbs:
-                        with st.spinner(f"📗 ГҮЙЛГЭЭ_БАЛАНС {d['year']} хөрвүүлж байна..."):
+                        with st.spinner(f"📗 Гүйлгаа баланс {d['year']} хөрвүүлж байна..."):
                             d['file'].seek(0)
                             buf, tb_s = process_raw_tb(d['file'])
                             if tb_s is not None and not tb_s.empty:
@@ -1408,11 +1210,12 @@ if page.startswith("1"):
                                 f.seek(0)
                                 df_e, cnt_e = process_edt(f, yr)
                                 if cnt_e > 0:
-                                    if not acct_map_df.empty:
-                                        df_e = apply_account_mapping(df_e, acct_map_df)
                                     frames.append(df_e)
                             if frames:
                                 st.session_state.led_res[yr] = pd.concat(frames, ignore_index=True)
+                                # Дансны нэр нэгтгэх (хэрэв лавлах файл өгсөн бол)
+                                if acct_name_map:
+                                    st.session_state.led_res[yr] = merge_account_names(st.session_state.led_res[yr], acct_name_map)
                                 st.success(f"✅ ЕЖ {yr}: {len(st.session_state.led_res[yr]):,} гүйлгээ")
                             else:
                                 st.warning(f"⚠️ {yr} оны ЕЖ файл(уудаас) гүйлгээ уншигдсангүй. Файлын формат шалгана уу.")
@@ -1452,21 +1255,24 @@ elif page.startswith("2"):
     <div style="background-color: #E8F5E9; padding: 15px; border-radius: 8px; border-left: 4px solid #2E7D32; margin-bottom: 15px;">
         <b>📂 Бүх файлаа нэг дор оруулна уу.</b> Систем автоматаар формат таниж, стандарт хэлбэр рүү хөрвүүлж, шинжилгээг ажиллуулна.<br>
         <span style="color: #555; font-size: 13px;">
-        ГҮЙЛГЭЭ_БАЛАНС, Ерөнхий журнал, TB, Ledger, Нэгтгэл — бүгдийг нь оруулаад болно. Систем өөрөө ялгана.
+        Гүйлгаа баланс, Ерөнхий журнал, TB, Ledger, Нэгтгэл — бүгдийг нь оруулаад болно. Систем өөрөө ялгана.
         </span>
     </div>
     """, unsafe_allow_html=True)
 
-    account_map_file2 = st.file_uploader("🧾 Дансны код-нэрийн тусдаа файл (сонголтоор)", type=['xlsx'], accept_multiple_files=False, key='acct_map_analysis')
-    acct_map_df2 = pd.DataFrame()
-    if account_map_file2 is not None:
-        acct_map_df2 = extract_account_mapping(account_map_file2)
-        if acct_map_df2.empty:
-            st.warning("⚠️ Дансны код-нэрийн файлаас mapping уншигдсангүй. Формат шалгана уу.")
-        else:
-            st.success(f"✅ Шинжилгээнд ашиглах mapping ачааллаа: {len(acct_map_df2):,} мөр")
-
     all_files = st.file_uploader("📎 Бүх файлуудаа энд оруулна уу (ямар ч формат, хэдэн ч файл)", type=['xlsx', 'csv', 'gz'], accept_multiple_files=True, key='smart_analysis')
+
+    # ── Дансны нэрийн лавлах файл ──
+    with st.expander("📋 Дансны нэрийн лавлах файл (заавал биш)", expanded=False):
+        st.markdown("ЕЖ-д дансны нэр байхгүй бол **СТ-1А** эсвэл **Дансны жагсаалт** файлаас нэрийг нэгтгэнэ.")
+        acct_name_file2 = st.file_uploader("📎 Дансны код + нэрийн файл", type=['xlsx'], key='acct_names_analysis')
+        acct_name_map2 = {}
+        if acct_name_file2:
+            acct_name_map2 = parse_account_names(acct_name_file2)
+            if acct_name_map2:
+                st.success(f"✅ {len(acct_name_map2)} дансны нэр уншигдлаа")
+            else:
+                st.warning("⚠️ Дансны нэр уншигдсангүй.")
 
     tb_files = []
     led_files = []
@@ -1489,10 +1295,21 @@ elif page.startswith("2"):
         # Auto-convert raw files + route ready files
         raw_tbs = [d for d in detected if d['type'] == 'raw_tb']
         edts = [d for d in detected if d['type'] == 'edt']
+        unknowns = [d for d in detected if d['type'] == 'unknown']
         need_convert = len(raw_tbs) > 0 or len(edts) > 0
 
+        # Тодорхойгүй файлуудаас дансны нэрийн лавлах хайх
+        for u in unknowns:
+            u['file'].seek(0)
+            if detect_account_names_file(u['file']):
+                u['file'].seek(0)
+                auto_map = parse_account_names(u['file'])
+                if auto_map:
+                    acct_name_map2 = {**acct_name_map2, **auto_map}
+                    st.info(f"📋 **{u['name']}** — дансны нэрийн лавлах файл гэж таниж, {len(auto_map)} дансны нэр нэгтгэнэ.")
+
         if need_convert:
-            st.info(f"🔄 **{len(raw_tbs)} ГҮЙЛГЭЭ_БАЛАНС + {len(edts)} ЕЖ** файл автоматаар хөрвүүлэгдэнэ.")
+            st.info(f"🔄 **{len(raw_tbs)} Гүйлгээ баланс + {len(edts)} ЕЖ** файл автоматаар хөрвүүлэгдэнэ.")
 
         for d in detected:
             if d['type'] == 'tb_std':
@@ -1502,7 +1319,7 @@ elif page.startswith("2"):
             elif d['type'] == 'part1':
                 p1_files.append(d['file'])
             elif d['type'] == 'raw_tb':
-                # Auto-convert ГҮЙЛГЭЭ_БАЛАНС → TB_standardized
+                # Auto-convert Гүйлгаа баланс → TB_standardized
                 with st.spinner(f"📗 {d['name']} → TB хөрвүүлж байна..."):
                     d['file'].seek(0)
                     buf, tb_s = process_raw_tb(d['file'])
@@ -1519,11 +1336,12 @@ elif page.startswith("2"):
                 with st.spinner(f"📘 {d['name']} → Гүйлгээ + Нэгтгэл хөрвүүлж байна..."):
                     d['file'].seek(0)
                     df_edt, cnt = process_edt(d['file'], d['year'])
-                    if cnt > 0 and not acct_map_df2.empty:
-                        df_edt = apply_account_mapping(df_edt, acct_map_df2)
                 if cnt == 0 or df_edt.empty:
                     st.warning(f"⚠️ **{d['name']}** — ЕЖ гэж танигдсан ч гүйлгээ уншигдсангүй. Файлын формат тохирохгүй байж магадгүй.")
                 else:
+                    # Дансны нэр нэгтгэх (хэрэв лавлах файл өгсөн бол)
+                    if acct_name_map2:
+                        df_edt = merge_account_names(df_edt, acct_name_map2)
                     cols_out = ['report_year','account_code','account_name','transaction_no','transaction_date',
                                 'journal_no','document_no','counterparty_name','counterparty_id',
                                 'transaction_description','debit_mnt','credit_mnt','balance_mnt','month']
@@ -1615,14 +1433,7 @@ elif page.startswith("2"):
                     sample_n = min(len(txn_combined), 50000)
                     txn_s = txn_combined.sample(n=sample_n, random_state=42) if len(txn_combined) > sample_n else txn_combined.copy()
                     txn_s = engineer_txn_features(txn_s)
-                    mat_overlay = None
-                    try:
-                        if len(tb_all) > 0:
-                            mf = calculate_materiality_framework(tb_all, overall_override=None)
-                            mat_overlay = build_materiality_by_account(tb_all, mf['overall_materiality'], 0.75, 0.05)
-                    except Exception:
-                        mat_overlay = None
-                    txn_result, _ = run_txn_anomaly(txn_s, cont, mat_overlay)
+                    txn_result, _ = run_txn_anomaly(txn_s, cont)
                 except Exception as e:
                     st.warning(f"⚠️ Гүйлгээний шинжилгээ алдаа: {e}")
         # Store all results in session_state
@@ -1749,25 +1560,58 @@ elif page.startswith("2"):
             fg2.update_layout(title='ROC муруй — загварын ялгах чадварын харьцуулалт', height=400)
             st.plotly_chart(fg2, use_container_width=True)
             st.subheader("📉 Илрүүлэлтийн эрсдэлийн харьцуулалт (ISA 200)")
+            st.markdown("""
+            <div style="background:#f5f5f5; padding:10px; border-radius:8px; font-size:13px; margin-bottom:10px;">
+            <b>Detection Risk (DR)</b> = 1 − Recall = Материаллаг алдаа аудитаар илрэлгүй үлдэх магадлал.<br>
+            DR бага байх тусам аудитын чанар өндөр (ISA 200.13).
+            </div>
+            """, unsafe_allow_html=True)
             dr = []
             for yv in yrs:
                 mk = (df['year'] == yv).values
-                yt = y[mk]
-                nt2 = yt.sum()
+                yt = y[mk]; nt2 = int(yt.sum()); nt_all = int(mk.sum())
                 if nt2 > 0:
-                    a2 = 1 - (bp[mk] & yt).sum() / nt2
-                    m2x = 1 - (ym[mk] & yt).sum() / nt2
+                    ai_tp = int((bp[mk] & yt).sum())
+                    mus_tp = int((ym[mk] & yt).sum())
+                    dr_ai = 1 - ai_tp / nt2
+                    dr_mus = 1 - mus_tp / nt2
                 else:
-                    a2 = 0
-                    m2x = 0
-                dr.append({'Жил': yv, 'ХОУ': f"{a2:.4f}", 'MUS 20%': f"{m2x:.4f}", 'Сайжрал': f"{m2x - a2:.4f}"})
+                    ai_tp = 0; mus_tp = 0; dr_ai = 0; dr_mus = 0
+                dr.append({
+                    'Жил': yv, 'Нийт данс': nt_all, 'Хэвийн бус данс': nt2,
+                    'ХОУ илрүүлсэн': f"{ai_tp}/{nt2}",
+                    'ХОУ DR': f"{dr_ai:.4f}",
+                    'MUS илрүүлсэн': f"{mus_tp}/{nt2}",
+                    'MUS DR': f"{dr_mus:.4f}",
+                    'Сайжрал (дахин)': f"{dr_mus/max(dr_ai,0.001):.1f}×" if dr_ai > 0 else "∞"
+                })
             st.dataframe(pd.DataFrame(dr), use_container_width=True, hide_index=True)
+            # ── McNemar тест (бодит тооцоо) ──
+            try:
+                bp_int = bp.astype(int); ym_int = ym.astype(int)
+                b_cnt = int(((bp_int == y) & (ym_int != y)).sum())  # ХОУ зөв, MUS буруу
+                c_cnt = int(((bp_int != y) & (ym_int == y)).sum())  # ХОУ буруу, MUS зөв
+                if (b_cnt + c_cnt) > 0:
+                    chi2 = (abs(b_cnt - c_cnt) - 1)**2 / (b_cnt + c_cnt)
+                    p_txt = "p < 0.001" if chi2 > 10.83 else ("p < 0.01" if chi2 > 6.63 else ("p < 0.05" if chi2 > 3.84 else "p ≥ 0.05"))
+                else:
+                    chi2 = 0; p_txt = "тооцоолох боломжгүй"
+                st.markdown(f"""
+                <div style="background:#e8f5e9; padding:12px; border-radius:8px; border-left:4px solid #2e7d32; margin:10px 0;">
+                <b>📊 McNemar тест (ХОУ vs MUS ялгааны статистик шалгалт):</b><br>
+                χ² = <b>{chi2:.2f}</b>, <b>{p_txt}</b><br>
+                ХОУ зөв + MUS буруу: <b>{b_cnt}</b> данс | ХОУ буруу + MUS зөв: <b>{c_cnt}</b> данс
+                </div>
+                """, unsafe_allow_html=True)
+                mcn_txt = f"χ²={chi2:.2f}, {p_txt}"
+            except Exception:
+                mcn_txt = ""
             td.show_ai_vs_mus_interpretation(
                 rf_f1=f"{res[best]['f1']:.4f}",
                 rf_auc=f"{res[best]['auc']:.4f}",
-                dr_ai=dr[0]['ХОУ'] if dr else "",
-                dr_mus=dr[0]['MUS 20%'] if dr else "",
-                mcnemar_chi2="p<0.001"
+                dr_ai=dr[0]['ХОУ DR'] if dr else "",
+                dr_mus=dr[0]['MUS DR'] if dr else "",
+                mcnemar_chi2=mcn_txt
             )
 
         with all_tabs[3]:
@@ -2042,41 +1886,33 @@ elif page.startswith("3"):
             if tb_year.empty:
                 st.warning("⚠️ Сонгосон жилд TB өгөгдөл байхгүй.")
             else:
-                mat_meta = calculate_materiality_framework(tb_year, overall_override=overall if overall > 0 else None)
-                overall_use = float(mat_meta.get('overall_materiality', 0))
+                overall_use = overall if overall > 0 else materiality_base_from_tb(tb_year) * 0.01
                 mat_df = build_materiality_by_account(tb_year, overall_use, perf_ratio, trivial_ratio)
                 st.session_state['materiality_done'] = True
                 st.session_state['materiality_df'] = mat_df
                 st.session_state['materiality_year'] = selected_year
                 st.session_state['materiality_overall'] = overall_use
-                st.session_state['materiality_meta'] = mat_meta
 
     if st.session_state.get('materiality_done', False):
         mat_df = st.session_state.get('materiality_df', pd.DataFrame())
         selected_year = st.session_state.get('materiality_year', selected_year)
         overall_use = st.session_state.get('materiality_overall', overall)
-        mat_meta = st.session_state.get('materiality_meta', {})
         if mat_df is None or mat_df.empty:
             st.warning("⚠️ Материаллаг байдлын үр дүн хоосон байна.")
         else:
             st.markdown("### Материаллаг байдлын хуваарилалт")
             m1, m2, m3 = st.columns(3)
-            m1.metric("Нийт материаллаг байдал", f"{overall_use:,.0f}")
-            m2.metric("Гүйцэтгэлийн материаллаг байдал", f"{mat_meta.get('performance_materiality', overall_use * perf_ratio):,.0f}")
+            m1.metric("Нийт материаллаг байдал", f"₮{overall_use:,.0f}")
+            m2.metric("Гүйцэтгэлийн материаллаг", f"₮{overall_use * perf_ratio:,.0f}")
             m3.metric("Дансны тоо", f"{len(mat_df):,}")
-            if mat_meta:
-                pct = mat_meta.get('benchmark_pct', np.nan)
-                pct_txt = f" ({pct*100:.1f}%)" if pd.notna(pct) else ''
-                st.caption(f"Бенчмарк: {mat_meta.get('benchmark_name','')} = {mat_meta.get('benchmark_value',0):,.0f}{pct_txt}")
-                st.caption(f"Clearly trivial / Анхаарах доод босго: {mat_meta.get('trivial_threshold',0):,.0f}")
 
             query = st.text_input("Данс хайх", key='materiality_query')
             show_df = mat_df.copy()
             if query:
                 q = query.lower().strip()
                 show_df = show_df[
-                    show_df['account_code'].astype(str).str.lower().str.contains(q, na=False) |
-                    show_df['account_name'].astype(str).str.lower().str.contains(q, na=False)
+                    show_df.iloc[:,0].astype(str).str.lower().str.contains(q, na=False) |
+                    show_df.iloc[:,1].astype(str).str.lower().str.contains(q, na=False)
                 ]
 
             st.dataframe(show_df, use_container_width=True, hide_index=True)
@@ -2084,9 +1920,9 @@ elif page.startswith("3"):
             if not show_df.empty:
                 fig = px.bar(
                     show_df.head(20),
-                    x='account_code',
-                    y='төлөвлөлтийн материаллаг байдал',
-                    hover_data=['account_name','гүйцэтгэлийн материаллаг байдал','анхаарах доод дүн'],
+                    x='Дансны код',
+                    y='Зөвшөөрөгдөх алдаа ₮',
+                    hover_data=['Дансны нэр','Ангилал','Эрсдэлийн түвшин','Аудитын горим (ISA 330)'],
                     title='Материаллаг байдлын хуваарилалт — өндөр ач холбогдолтой 20 данс'
                 )
                 st.plotly_chart(fig, use_container_width=True)
