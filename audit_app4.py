@@ -15,7 +15,7 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import LabelEncoder, StandardScaler
 from sklearn.model_selection import StratifiedKFold, cross_val_predict
 from sklearn.metrics import precision_score, recall_score, f1_score, roc_auc_score, roc_curve
-import warnings, io, re, gzip, zipfile
+import warnings, io, re, gzip
 from datetime import datetime
 from collections import Counter
 warnings.filterwarnings('ignore')
@@ -460,197 +460,6 @@ def read_ledger(f):
         return pd.read_csv(io.StringIO(gzip.decompress(raw).decode('utf-8')), dtype={'account_code': str})
     return pd.read_csv(io.BytesIO(raw), dtype={'account_code': str})
 
-
-
-def build_account_csv_zip(df, base_name="anomaly_txn_by_account"):
-    """account_code тус бүрээр CSV үүсгээд ZIP буцаана."""
-    buf = io.BytesIO()
-    if df is None or len(df) == 0 or 'account_code' not in df.columns:
-        return buf.getvalue()
-
-    def _safe_name(v):
-        s = str(v).strip() if v is not None else 'unknown'
-        s = re.sub(r'[^\w\-.]+', '_', s)
-        return s or 'unknown'
-
-    work = df.copy()
-    work['account_code'] = work['account_code'].astype(str).fillna('unknown')
-
-    with zipfile.ZipFile(buf, mode='w', compression=zipfile.ZIP_DEFLATED) as zf:
-        for acct_code, g in work.groupby('account_code', dropna=False):
-            acct_file = f"{base_name}_{_safe_name(acct_code)}.csv"
-            zf.writestr(acct_file, g.to_csv(index=False).encode('utf-8-sig'))
-    return buf.getvalue()
-
-
-
-def _safe_sheet_name(name, fallback='AI_эрсдэл'):
-    s = str(name).strip() if name is not None else fallback
-    s = re.sub(r'[\\/*?:\[\]]+', '_', s)
-    return (s[:31] or fallback)
-
-def _pick_issue_standard(reason_text):
-    rt = str(reason_text).lower()
-    if 'чиглэл' in rt or 'ангил' in rt:
-        return 'УСНББОУС 1, УСНББОУС 12'
-    if 'давхард' in rt or 'залилан' in rt:
-        return 'ISA 240, ISA 500'
-    if 'тайлбар' in rt or 'нэр' in rt:
-        return 'ISA 520, УСНББОУС 1'
-    if 'сар' in rt or 'жил' in rt:
-        return 'ISA 240, ISA 520'
-    return 'ISA 520, ISA 315, ISA 240'
-
-def _pick_issue_law(reason_text):
-    rt = str(reason_text).lower()
-    base = 'Нягтлан бодох бүртгэлийн тухай хуулийн 20 дугаар зүйлийн 20.2.3-т “холбогдох олон улсын стандарт, эрх бүхий байгууллагаас баталсан стандарт, журам, зааврыг баримтлан бүртгэл хөтөлж, санхүүгийн тайлан гаргах” гэж заасантай нийцүүлэх шаардлагатай.'
-    if 'давхард' in rt or 'залилан' in rt:
-        return 'Нягтлан бодох бүртгэлийн тухай хуулийн 13, 20 дугаар зүйлийн шаардлага болон дотоод хяналтын журмыг мөрдөж, давхардсан болон эрсдэлтэй бичилтийг баримтаар баталгаажуулах шаардлагатай.'
-    if 'тайлбар' in rt or 'ангил' in rt or 'чиглэл' in rt:
-        return 'Нягтлан бодох бүртгэлийн тухай хуулийн 15.2-т алдааг тайлант үед залруулж тусгах, 20.2.3-т стандарт, журам баримтлах тухай заасантай нийцүүлэх шаардлагатай.'
-    return base
-
-def build_issue_register_from_txn(txn_df, materiality_df=None, overall_materiality=0.0, top_n=50):
-    """Гүйлгээний эрсдэлийн дүнг ААБ 5.3 форматтай асуудлын бүртгэлийн мөрүүд болгон нэгтгэнэ."""
-    if txn_df is None or len(txn_df) == 0:
-        return pd.DataFrame()
-
-    d = txn_df.copy()
-    for c in ['account_code','account_name','transaction_description','debit_mnt','credit_mnt','txn_risk',
-              'desc_mismatch','name_no_overlap','dir_mismatch','is_dup','cp_rare','pair_rare',
-              'desc_empty','is_month_end','is_year_end']:
-        if c not in d.columns:
-            d[c] = '' if c in ['account_code','account_name','transaction_description'] else 0
-
-    d['account_code'] = d['account_code'].astype(str).fillna('')
-    d['account_name'] = d['account_name'].astype(str).fillna('')
-    d['transaction_description'] = d['transaction_description'].astype(str).fillna('')
-    d['debit_mnt'] = pd.to_numeric(d['debit_mnt'], errors='coerce').fillna(0)
-    d['credit_mnt'] = pd.to_numeric(d['credit_mnt'], errors='coerce').fillna(0)
-    d['txn_risk'] = pd.to_numeric(d['txn_risk'], errors='coerce').fillna(0)
-    d['issue_amount'] = d['debit_mnt'].abs() + d['credit_mnt'].abs()
-
-    mat_map = {}
-    if materiality_df is not None and not materiality_df.empty:
-        m = materiality_df.copy()
-        if 'Дансны код' in m.columns and 'Зөвшөөрөгдөх алдаа ₮' in m.columns:
-            m['Дансны код'] = m['Дансны код'].astype(str)
-            mat_map = dict(zip(m['Дансны код'], pd.to_numeric(m['Зөвшөөрөгдөх алдаа ₮'], errors='coerce').fillna(0)))
-
-    reason_cols = [
-        ('desc_mismatch', 'тайлбар дансны хэв маягтай зөрсөн'),
-        ('name_no_overlap', 'дансны нэр ба тайлбарын уялдаа сул'),
-        ('dir_mismatch', 'дансны чиглэлтэй зөрсөн бичилт илэрсэн'),
-        ('is_dup', 'давхардсан бичилт илэрсэн'),
-        ('cp_rare', 'ховор харилцагчтай гүйлгээ илэрсэн'),
-        ('pair_rare', 'ховор данс-харилцагчийн хос илэрсэн'),
-        ('desc_empty', 'тайлбаргүй гүйлгээ илэрсэн'),
-        ('is_month_end', 'сарын эцсийн гүйлгээ төвлөрсөн'),
-        ('is_year_end', 'жилийн эцсийн гүйлгээ төвлөрсөн'),
-    ]
-
-    out_rows = []
-    grouped = d.groupby(['account_code','account_name'], dropna=False)
-    for acct_code, acct_name in grouped.size().index.tolist():
-        g = grouped.get_group((acct_code, acct_name)).copy()
-        flagged_cnt = len(g)
-        issue_amount = float(g['issue_amount'].sum())
-        max_risk = float(g['txn_risk'].max()) if 'txn_risk' in g.columns else 0.0
-        threshold = float(mat_map.get(str(acct_code), 0.0))
-        if threshold <= 0:
-            threshold = float(overall_materiality) if overall_materiality and overall_materiality > 0 else max(issue_amount * 0.5, 1.0)
-
-        reasons = []
-        for col, label in reason_cols:
-            if col in g.columns:
-                cnt = int(pd.to_numeric(g[col], errors='coerce').fillna(0).astype(int).sum())
-                if cnt > 0:
-                    reasons.append(f'{label} ({cnt})')
-        if not reasons:
-            reasons = ['олон шинжээр хэвийн бус гүйлгээ илэрсэн']
-
-        top_desc = ''
-        if 'transaction_description' in g.columns:
-            vc = g['transaction_description'].replace('', np.nan).dropna().astype(str).str.strip()
-            if not vc.empty:
-                top_desc = vc.value_counts().index[0][:140]
-
-        ag = 'Дансны үлдэгдэл' if str(acct_code)[:1] in ('1','2','3') else 'Ажил гүйлгээ'
-        mat_label = 'Материаллаг' if issue_amount >= threshold else 'Материаллаг бус'
-        reason_text = '; '.join(reasons[:3])
-        summary = f'{acct_code} кодтой "{acct_name}" дансанд нийт {flagged_cnt} эрсдэлтэй гүйлгээ илэрсэн бөгөөд {reason_text}.'
-        if top_desc:
-            summary += f' Түгээмэл тайлбар: "{top_desc}".'
-        summary += f' Шалгах нийт мөнгөн дүн {issue_amount:,.0f}₮.'
-
-        out_rows.append({
-            'дд': None,
-            'АГАДҮТ': ag,
-            'АГАДҮТ-ийн дэд анги': acct_name if acct_name else acct_code,
-            'Алдаа, зөрчлийн товч утга': summary,
-            'Мөнгөн дүн': round(issue_amount, 2),
-            'Материаллаг эсэх': mat_label,
-            'Стандартын заалт': _pick_issue_standard(reason_text),
-            'Хууль тогтоомжийн заалт': _pick_issue_law(reason_text),
-            'Аудитын багийн санал': 'залруулах' if mat_label == 'Материаллаг' else 'зөвлөмж',
-            'Эрсдэлийн оноо': round(max_risk, 2),
-            'Эрсдэлтэй гүйлгээний тоо': flagged_cnt,
-            'Дансны код': acct_code,
-            'Материаллаг босго ₮': round(threshold, 2),
-        })
-
-    out = pd.DataFrame(out_rows)
-    if out.empty:
-        return out
-    out = out.sort_values(['Мөнгөн дүн','Эрсдэлийн оноо','Эрсдэлтэй гүйлгээний тоо'], ascending=False).head(int(top_n)).reset_index(drop=True)
-    out['дд'] = range(1, len(out)+1)
-    return out
-
-def build_issue_register_workbook(template_file, issue_df, target_sheet=None, insert_row=12):
-    """ААБ 5.3 загварт AI-ээр үүсгэсэн асуудлын бүртгэлийг шингээсэн xlsx byte буцаана."""
-    import copy
-    import openpyxl
-
-    if issue_df is None or issue_df.empty:
-        return b''
-
-    template_file.seek(0)
-    wb = openpyxl.load_workbook(template_file)
-    if target_sheet and target_sheet in wb.sheetnames:
-        base_ws = wb[target_sheet]
-    else:
-        sheet_candidates = [s for s in wb.sheetnames if s != 'НЭГТГЭСЭН-АБ']
-        base_ws = wb[sheet_candidates[0] if sheet_candidates else wb.sheetnames[0]]
-
-    new_name = _safe_sheet_name(f'{base_ws.title}_AI')
-    if new_name in wb.sheetnames:
-        del wb[new_name]
-    ws = wb.copy_worksheet(base_ws)
-    ws.title = new_name
-
-    if ws.max_row >= insert_row:
-        ws.insert_rows(insert_row, amount=max(len(issue_df) - 1, 0))
-
-    for idx, row in enumerate(issue_df.to_dict('records'), start=insert_row):
-        ws.cell(idx, 1).value = row.get('дд')
-        ws.cell(idx, 2).value = row.get('АГАДҮТ')
-        ws.cell(idx, 3).value = row.get('АГАДҮТ-ийн дэд анги')
-        ws.cell(idx, 4).value = row.get('Алдаа, зөрчлийн товч утга')
-        ws.cell(idx, 5).value = row.get('Мөнгөн дүн')
-        ws.cell(idx, 6).value = row.get('Материаллаг эсэх')
-        ws.cell(idx, 7).value = row.get('Стандартын заалт')
-        ws.cell(idx, 8).value = row.get('Хууль тогтоомжийн заалт')
-        ws.cell(idx, 9).value = row.get('Аудитын багийн санал')
-
-    info_row = insert_row + len(issue_df) + 1
-    ws.cell(info_row, 2).value = 'AI нэгтгэлийн тайлбар'
-    ws.cell(info_row, 4).value = 'Энэхүү worksheet нь гүйлгээний түвшний эрсдэлийн шинжилгээнээс автомат нэгтгэсэн урьдчилсан ажлын хувилбар бөгөөд аудитор мэргэжлийн үнэлгээгээр эцэслэн баталгаажуулна.'
-
-    buf = io.BytesIO()
-    wb.save(buf)
-    buf.seek(0)
-    return buf.getvalue()
-
 def get_year(name):
     for y in range(2020, 2030):
         if str(y) in name:
@@ -796,251 +605,6 @@ def load_ledger_stats(files, sample_per_year=20000, chunksize=100000):
     full_df = pd.concat(sampled_frames, ignore_index=True) if sampled_frames else pd.DataFrame(columns=needed_cols)
     return stats, full_df
 
-def load_ledger_reconciliation(files, chunksize=100000):
-    """Full ledger-ээс данс бүрийн сарын болон жилийн roll-forward / reconciliation хүснэгтүүдийг chunk-ээр бэлдэнэ."""
-    month_store = {}
-    year_store = {}
-
-    needed_cols = [
-        'report_year','account_code','account_name','transaction_no','transaction_date',
-        'debit_mnt','credit_mnt','balance_mnt','month'
-    ]
-
-    def _iter_chunks(fobj):
-        fobj.seek(0)
-        raw = fobj.read()
-        fobj.seek(0)
-        if raw[:2] == b'\x1f\x8b':
-            bio = io.BytesIO(gzip.decompress(raw))
-            return pd.read_csv(bio, dtype={'account_code': str}, chunksize=chunksize)
-        return pd.read_csv(io.BytesIO(raw), dtype={'account_code': str}, chunksize=chunksize)
-
-    def _tx_sort_series(chunk):
-        txd = pd.to_datetime(chunk['transaction_date'], errors='coerce')
-        txno_num = pd.to_numeric(chunk['transaction_no'], errors='coerce')
-        txno_str = chunk['transaction_no'].astype(str).fillna('')
-        sort_key = txd.dt.strftime('%Y%m%d').fillna('00000000') + '_' + txno_num.fillna(0).astype(float).round(0).astype(int).astype(str).str.zfill(10) + '_' + txno_str
-        return sort_key
-
-    def _merge_month_row(key, row):
-        rec = month_store.get(key)
-        if rec is None:
-            month_store[key] = row
-            return
-        rec['txn_count'] += row['txn_count']
-        rec['debit_sum'] += row['debit_sum']
-        rec['credit_sum'] += row['credit_sum']
-        rec['net_sum'] += row['net_sum']
-        if row['first_sort'] < rec['first_sort']:
-            rec['first_sort'] = row['first_sort']
-            rec['first_balance'] = row['first_balance']
-            rec['first_net'] = row['first_net']
-        if row['last_sort'] > rec['last_sort']:
-            rec['last_sort'] = row['last_sort']
-            rec['last_balance'] = row['last_balance']
-        if (not rec.get('account_name')) and row.get('account_name'):
-            rec['account_name'] = row['account_name']
-
-    def _merge_year_row(key, row):
-        rec = year_store.get(key)
-        if rec is None:
-            year_store[key] = row
-            return
-        rec['txn_count'] += row['txn_count']
-        rec['debit_sum'] += row['debit_sum']
-        rec['credit_sum'] += row['credit_sum']
-        rec['net_sum'] += row['net_sum']
-        if row['first_sort'] < rec['first_sort']:
-            rec['first_sort'] = row['first_sort']
-            rec['first_balance'] = row['first_balance']
-            rec['first_net'] = row['first_net']
-        if row['last_sort'] > rec['last_sort']:
-            rec['last_sort'] = row['last_sort']
-            rec['last_balance'] = row['last_balance']
-        if (not rec.get('account_name')) and row.get('account_name'):
-            rec['account_name'] = row['account_name']
-
-    for f in files:
-        year = str(get_year(f.name))
-        try:
-            chunks = _iter_chunks(f)
-        except Exception:
-            f.seek(0)
-            df0 = read_ledger(f)
-            chunks = [df0]
-
-        for chunk in chunks:
-            if chunk is None or len(chunk) == 0:
-                continue
-            for c in needed_cols:
-                if c not in chunk.columns:
-                    chunk[c] = '' if c in ('report_year','account_code','account_name','transaction_no','transaction_date','month') else 0
-            chunk = chunk[needed_cols].copy()
-            chunk['report_year'] = chunk['report_year'].astype(str).replace({'': year, 'nan': year}).fillna(year)
-            chunk['report_year'] = chunk['report_year'].where(chunk['report_year'].str.len() > 0, year)
-            chunk['account_code'] = chunk['account_code'].astype(str).fillna('')
-            chunk['account_name'] = chunk['account_name'].astype(str).fillna('')
-            chunk['transaction_no'] = chunk['transaction_no'].astype(str).fillna('')
-            chunk['debit_mnt'] = pd.to_numeric(chunk['debit_mnt'], errors='coerce').fillna(0.0)
-            chunk['credit_mnt'] = pd.to_numeric(chunk['credit_mnt'], errors='coerce').fillna(0.0)
-            chunk['balance_mnt'] = pd.to_numeric(chunk['balance_mnt'], errors='coerce').fillna(0.0)
-            txd = pd.to_datetime(chunk['transaction_date'], errors='coerce')
-            chunk['month'] = chunk['month'].astype(str).fillna('')
-            chunk.loc[chunk['month'].isin(['', 'nan', 'NaT']), 'month'] = txd.dt.strftime('%Y-%m').fillna('')
-            chunk['net_mnt'] = chunk['debit_mnt'] - chunk['credit_mnt']
-            chunk['tx_sort'] = _tx_sort_series(chunk)
-
-            # month aggregates
-            mo_sum = chunk.groupby(['report_year','month','account_code','account_name'], dropna=False).agg(
-                txn_count=('net_mnt', 'count'),
-                debit_sum=('debit_mnt', 'sum'),
-                credit_sum=('credit_mnt', 'sum'),
-                net_sum=('net_mnt', 'sum')
-            ).reset_index()
-            mo_first = chunk.sort_values('tx_sort').groupby(['report_year','month','account_code','account_name'], dropna=False).first().reset_index()
-            mo_last = chunk.sort_values('tx_sort').groupby(['report_year','month','account_code','account_name'], dropna=False).last().reset_index()
-            mo = mo_sum.merge(mo_first[['report_year','month','account_code','account_name','tx_sort','balance_mnt','net_mnt']], on=['report_year','month','account_code','account_name'], how='left')
-            mo = mo.rename(columns={'tx_sort':'first_sort','balance_mnt':'first_balance','net_mnt':'first_net'})
-            mo = mo.merge(mo_last[['report_year','month','account_code','account_name','tx_sort','balance_mnt']], on=['report_year','month','account_code','account_name'], how='left')
-            mo = mo.rename(columns={'tx_sort':'last_sort','balance_mnt':'last_balance'})
-            for r in mo.to_dict('records'):
-                key = (r['report_year'], r['month'], str(r['account_code']), str(r['account_name']))
-                _merge_month_row(key, r)
-
-            # year aggregates
-            yr_sum = chunk.groupby(['report_year','account_code','account_name'], dropna=False).agg(
-                txn_count=('net_mnt', 'count'),
-                debit_sum=('debit_mnt', 'sum'),
-                credit_sum=('credit_mnt', 'sum'),
-                net_sum=('net_mnt', 'sum')
-            ).reset_index()
-            yr_first = chunk.sort_values('tx_sort').groupby(['report_year','account_code','account_name'], dropna=False).first().reset_index()
-            yr_last = chunk.sort_values('tx_sort').groupby(['report_year','account_code','account_name'], dropna=False).last().reset_index()
-            yr = yr_sum.merge(yr_first[['report_year','account_code','account_name','tx_sort','balance_mnt','net_mnt']], on=['report_year','account_code','account_name'], how='left')
-            yr = yr.rename(columns={'tx_sort':'first_sort','balance_mnt':'first_balance','net_mnt':'first_net'})
-            yr = yr.merge(yr_last[['report_year','account_code','account_name','tx_sort','balance_mnt']], on=['report_year','account_code','account_name'], how='left')
-            yr = yr.rename(columns={'tx_sort':'last_sort','balance_mnt':'last_balance'})
-            for r in yr.to_dict('records'):
-                key = (r['report_year'], str(r['account_code']), str(r['account_name']))
-                _merge_year_row(key, r)
-
-    month_df = pd.DataFrame(list(month_store.values())) if month_store else pd.DataFrame()
-    year_df = pd.DataFrame(list(year_store.values())) if year_store else pd.DataFrame()
-
-    if not month_df.empty:
-        month_df['opening_balance_est'] = pd.to_numeric(month_df['first_balance'], errors='coerce').fillna(0) - pd.to_numeric(month_df['first_net'], errors='coerce').fillna(0)
-        month_df['closing_balance_calc'] = month_df['opening_balance_est'] + pd.to_numeric(month_df['net_sum'], errors='coerce').fillna(0)
-        month_df['ledger_closing_balance'] = pd.to_numeric(month_df['last_balance'], errors='coerce').fillna(0)
-        month_df['recording_diff_mnt'] = month_df['ledger_closing_balance'] - month_df['closing_balance_calc']
-        month_df['abs_recording_diff_mnt'] = month_df['recording_diff_mnt'].abs()
-        month_df['has_recording_diff'] = (month_df['abs_recording_diff_mnt'] > 0.005).astype(int)
-        month_df = month_df[[
-            'report_year','month','account_code','account_name','txn_count',
-            'opening_balance_est','debit_sum','credit_sum','net_sum',
-            'closing_balance_calc','ledger_closing_balance','recording_diff_mnt',
-            'abs_recording_diff_mnt','has_recording_diff'
-        ]].sort_values(['report_year','month','account_code'])
-
-    if not year_df.empty:
-        year_df['opening_balance_est'] = pd.to_numeric(year_df['first_balance'], errors='coerce').fillna(0) - pd.to_numeric(year_df['first_net'], errors='coerce').fillna(0)
-        year_df['closing_balance_calc'] = year_df['opening_balance_est'] + pd.to_numeric(year_df['net_sum'], errors='coerce').fillna(0)
-        year_df['ledger_closing_balance'] = pd.to_numeric(year_df['last_balance'], errors='coerce').fillna(0)
-        year_df['recording_diff_mnt'] = year_df['ledger_closing_balance'] - year_df['closing_balance_calc']
-        year_df['abs_recording_diff_mnt'] = year_df['recording_diff_mnt'].abs()
-        year_df['has_recording_diff'] = (year_df['abs_recording_diff_mnt'] > 0.005).astype(int)
-        year_df = year_df[[
-            'report_year','account_code','account_name','txn_count',
-            'opening_balance_est','debit_sum','credit_sum','net_sum',
-            'closing_balance_calc','ledger_closing_balance','recording_diff_mnt',
-            'abs_recording_diff_mnt','has_recording_diff'
-        ]].sort_values(['report_year','account_code'])
-
-    return year_df, month_df
-
-
-def build_tb_ledger_reconciliation(tb_df, ledger_year_df):
-    """TB болон full ledger yearly aggregate-ийг тулгаж данс тус бүрийн жилийн зөрүүг гаргана."""
-    if tb_df is None or len(tb_df) == 0 or ledger_year_df is None or len(ledger_year_df) == 0:
-        return pd.DataFrame()
-    tb = tb_df.copy()
-    ly = ledger_year_df.copy()
-    tb['year'] = tb['year'].astype(str)
-    ly['report_year'] = ly['report_year'].astype(str)
-    tb['account_code'] = tb['account_code'].astype(str)
-    ly['account_code'] = ly['account_code'].astype(str)
-    tb_cols = ['opening_balance_signed','turnover_debit','turnover_credit','turnover_net_signed','closing_balance_signed']
-    for c in tb_cols:
-        if c not in tb.columns:
-            tb[c] = 0.0
-        tb[c] = pd.to_numeric(tb[c], errors='coerce').fillna(0.0)
-    for c in ['opening_balance_est','debit_sum','credit_sum','net_sum','ledger_closing_balance','recording_diff_mnt']:
-        if c not in ly.columns:
-            ly[c] = 0.0
-        ly[c] = pd.to_numeric(ly[c], errors='coerce').fillna(0.0)
-
-    out = tb.merge(ly, left_on=['year','account_code'], right_on=['report_year','account_code'], how='outer', suffixes=('_tb','_ledger'))
-    out['account_name'] = out.get('account_name_tb', '').astype(str)
-    if 'account_name_ledger' in out.columns:
-        out['account_name'] = out['account_name'].where(out['account_name'].astype(str).str.strip() != '', out['account_name_ledger'].astype(str))
-    out['year'] = out['year'].fillna(out['report_year']).astype(str)
-
-    out['diff_opening_mnt'] = out['opening_balance_signed'].fillna(0) - out['opening_balance_est'].fillna(0)
-    out['diff_debit_mnt'] = out['turnover_debit'].fillna(0) - out['debit_sum'].fillna(0)
-    out['diff_credit_mnt'] = out['turnover_credit'].fillna(0) - out['credit_sum'].fillna(0)
-    out['diff_net_mnt'] = out['turnover_net_signed'].fillna(0) - out['net_sum'].fillna(0)
-    out['diff_closing_mnt'] = out['closing_balance_signed'].fillna(0) - out['ledger_closing_balance'].fillna(0)
-    out['max_abs_diff_mnt'] = out[['diff_opening_mnt','diff_debit_mnt','diff_credit_mnt','diff_net_mnt','diff_closing_mnt']].abs().max(axis=1)
-    out['has_any_diff'] = (out['max_abs_diff_mnt'] > 0.005).astype(int)
-
-    cols = [
-        'year','account_code','account_name',
-        'opening_balance_signed','opening_balance_est','diff_opening_mnt',
-        'turnover_debit','debit_sum','diff_debit_mnt',
-        'turnover_credit','credit_sum','diff_credit_mnt',
-        'turnover_net_signed','net_sum','diff_net_mnt',
-        'closing_balance_signed','ledger_closing_balance','diff_closing_mnt',
-        'recording_diff_mnt','max_abs_diff_mnt','has_any_diff'
-    ]
-    for c in cols:
-        if c not in out.columns:
-            out[c] = '' if c in ['year','account_code','account_name'] else 0
-    return out[cols].sort_values(['year','max_abs_diff_mnt','account_code'], ascending=[True, False, True]).reset_index(drop=True)
-
-
-def build_account_recon_zip(yearly_tb_ledger_df, monthly_roll_df, base_name='account_reconciliation'):
-    """Данс тус бүрээр сар/жил нийлүүлсэн CSV-үүдийг ZIP болгоно."""
-    buf = io.BytesIO()
-    if (yearly_tb_ledger_df is None or len(yearly_tb_ledger_df) == 0) and (monthly_roll_df is None or len(monthly_roll_df) == 0):
-        return buf.getvalue()
-
-    acct_codes = set()
-    if yearly_tb_ledger_df is not None and len(yearly_tb_ledger_df) > 0 and 'account_code' in yearly_tb_ledger_df.columns:
-        acct_codes.update(yearly_tb_ledger_df['account_code'].dropna().astype(str).unique().tolist())
-    if monthly_roll_df is not None and len(monthly_roll_df) > 0 and 'account_code' in monthly_roll_df.columns:
-        acct_codes.update(monthly_roll_df['account_code'].dropna().astype(str).unique().tolist())
-
-    def _safe_name(v):
-        s = str(v).strip() if v is not None else 'unknown'
-        s = re.sub(r'[^\w\-.]+', '_', s)
-        return s or 'unknown'
-
-    with zipfile.ZipFile(buf, mode='w', compression=zipfile.ZIP_DEFLATED) as zf:
-        for acct in sorted(acct_codes):
-            monthly_part = pd.DataFrame()
-            yearly_part = pd.DataFrame()
-            if monthly_roll_df is not None and len(monthly_roll_df) > 0:
-                monthly_part = monthly_roll_df[monthly_roll_df['account_code'].astype(str) == str(acct)].copy()
-            if yearly_tb_ledger_df is not None and len(yearly_tb_ledger_df) > 0:
-                yearly_part = yearly_tb_ledger_df[yearly_tb_ledger_df['account_code'].astype(str) == str(acct)].copy()
-            if monthly_part.empty and yearly_part.empty:
-                continue
-            name = _safe_name(acct)
-            if not yearly_part.empty:
-                zf.writestr(f"{base_name}_{name}_yearly.csv", yearly_part.to_csv(index=False).encode('utf-8-sig'))
-            if not monthly_part.empty:
-                zf.writestr(f"{base_name}_{name}_monthly.csv", monthly_part.to_csv(index=False).encode('utf-8-sig'))
-    return buf.getvalue()
-
 def load_part1(files):
     all_rm = []
     all_mo = []
@@ -1095,7 +659,7 @@ def engineer_txn_features(d):
     af = d[d['benford_digit']>0]['benford_digit'].value_counts(normalize=True)
     d['benford_dev'] = d['benford_digit'].map(lambda x: abs(af.get(x,0)-benford_exp.get(x,0)) if x>0 else 0)
 
-    # Тэгш тоо
+    # Тэгс тоо
     d['is_round'] = (((d['amount']>=1e6)&(d['amount']%1e6==0)).astype(int) + ((d['amount']>=1e3)&(d['amount']%1e3==0)).astype(int))
 
     # Данс доторх z-score
@@ -1215,7 +779,7 @@ def run_txn_anomaly(df, cont=0.05):
         df['desc_mismatch'] * 2 +        # Тайлбар↔данс зөрчил (ISA 500)
         df['name_no_overlap'] * 1 +      # Нэр давхцахгүй (ISA 500)
         df['dir_mismatch'] * 3 +         # Чиглэлийн зөрчил (ISA 240) — жин нэмсэн
-        df.get('is_round', pd.Series(0, index=df.index)).astype(int) * 1  # Тэгш тоо
+        df.get('is_round', pd.Series(0, index=df.index)).astype(int) * 1  # Тэгс тоо
     )
     df['txn_risk_level'] = pd.cut(df['txn_risk'], bins=[-1,3,7,12,100],
         labels=['🟢 Бага','🟡 Дунд','🟠 Өндөр','🔴 Маш өндөр'])
@@ -1991,8 +1555,7 @@ elif page.startswith("2"):
         # Дансны түвшний шинжилгээ (TB + Ledger хоёулаа байвал)
         df = pd.DataFrame(); X = np.array([]); y = np.array([]); feats = []
         res = {}; best = ''; fi = pd.DataFrame(); ym = np.array([])
-        tb_all = pd.DataFrame(); tb_st = {}; led_st = {}; ledger_full = pd.DataFrame()
-        ledger_year_recon = pd.DataFrame(); ledger_month_recon = pd.DataFrame(); tb_ledger_recon = pd.DataFrame()
+        tb_st = {}; led_st = {}; ledger_full = pd.DataFrame()
         rm_all = pd.DataFrame(); mo_all = pd.DataFrame()
 
         if tb_files and led_files:
@@ -2000,9 +1563,6 @@ elif page.startswith("2"):
                 tb_all, tb_st = load_tb(tb_files)
             with st.spinner("Ledger уншиж байна..."):
                 led_st, ledger_full = load_ledger_stats(led_files)
-            with st.spinner("Ledger-ийн сар/жилийн тулгалт бэлдэж байна..."):
-                ledger_year_recon, ledger_month_recon = load_ledger_reconciliation(led_files)
-                tb_ledger_recon = build_tb_ledger_reconciliation(tb_all, ledger_year_recon) if len(tb_all) > 0 else pd.DataFrame()
             if p1_files:
                 with st.spinner("Part1 уншиж байна..."):
                     rm_all, mo_all = load_part1(p1_files)
@@ -2012,9 +1572,6 @@ elif page.startswith("2"):
             # Зөвхөн Ledger байвал — stats + full уншна
             with st.spinner("Ledger уншиж байна..."):
                 led_st, ledger_full = load_ledger_stats(led_files)
-            with st.spinner("Ledger-ийн сар/жилийн тулгалт бэлдэж байна..."):
-                ledger_year_recon, ledger_month_recon = load_ledger_reconciliation(led_files)
-                tb_ledger_recon = build_tb_ledger_reconciliation(tb_all, ledger_year_recon) if len(tb_all) > 0 else pd.DataFrame()
             if p1_files:
                 with st.spinner("Part1 уншиж байна..."):
                     rm_all, mo_all = load_part1(p1_files)
@@ -2055,12 +1612,7 @@ elif page.startswith("2"):
         st.session_state['best'] = best
         st.session_state['fi'] = fi
         st.session_state['ym'] = ym
-        st.session_state['tb_all'] = tb_all if 'tb_all' in locals() else pd.DataFrame()
         st.session_state['tb_st'] = tb_st
-        st.session_state['ledger_full'] = ledger_full if 'ledger_full' in locals() else pd.DataFrame()
-        st.session_state['ledger_year_recon'] = ledger_year_recon if 'ledger_year_recon' in locals() else pd.DataFrame()
-        st.session_state['ledger_month_recon'] = ledger_month_recon if 'ledger_month_recon' in locals() else pd.DataFrame()
-        st.session_state['tb_ledger_recon'] = tb_ledger_recon if 'tb_ledger_recon' in locals() else pd.DataFrame()
         st.session_state['led_st'] = led_st
         st.session_state['rm_all'] = rm_all
         st.session_state['mo_all'] = mo_all
@@ -2079,12 +1631,7 @@ elif page.startswith("2"):
         best = st.session_state['best']
         fi = st.session_state['fi']
         ym = st.session_state['ym']
-        tb_all = st.session_state.get('tb_all', pd.DataFrame())
         tb_st = st.session_state['tb_st']
-        ledger_full = st.session_state.get('ledger_full', pd.DataFrame())
-        ledger_year_recon = st.session_state.get('ledger_year_recon', pd.DataFrame())
-        ledger_month_recon = st.session_state.get('ledger_month_recon', pd.DataFrame())
-        tb_ledger_recon = st.session_state.get('tb_ledger_recon', pd.DataFrame())
         led_st = st.session_state['led_st']
         rm_all = st.session_state['rm_all']
         mo_all = st.session_state['mo_all']
@@ -2114,6 +1661,8 @@ elif page.startswith("2"):
             tab_names.append("🎯 Эрсдэлийн үнэлгээний матриц")
         if has_mo:
             tab_names.append("📈 Сарын гүйлгээний хандлага")
+        if has_account:
+            tab_names.append("📊 Бүртгэлийн зөрүүгийн шинжилгээ")
 
         all_tabs = st.tabs(tab_names)
 
@@ -2317,7 +1866,7 @@ elif page.startswith("2"):
 |---|-----------|-------------|-----|----------------|
 | 1 | **Данс доторх хэвийн бус дүн** (`amt_zscore`) | Тухайн дансны дундажаас хэт зөрсөн гүйлгээ | ISA 520 | >3σ → +2 |
 | 2 | **Бенфордын хуулийн хазайлт** (`benford_dev`) | Эхний оронгийн тархалт зөрсөн → тоон манипуляцийн шинж | ISA 240 | IF-д орно |
-| 3 | **Тэгш тоо** (`is_round`) | Бүхэл/тэгш дүнтэй сэжигтэй гүйлгээ (1сая, 10сая) | ISA 240 | 1сая+ → +1 |
+| 3 | **Тэгс тоо** (`is_round`) | Бүхэл/тэгс дүнтэй сэжигтэй гүйлгээ (1сая, 10сая) | ISA 240 | 1сая+ → +1 |
 | 4 | **Ховор харилцагч** (`cp_rare`) | ≤3 удаа гарсан шинэ/сэжигтэй харилцагч | ISA 550 | +1 |
 | 5 | **Ховор данс×харилцагч хос** (`pair_rare`) | Тухайн данс + тухайн харилцагч хослол ер бусын | ISA 550 | +1 |
 | 6 | **Давхардсан гүйлгээ** (`is_dup`) | Ижил данс + ижил дүн + ижил огноо | ISA 240 | +2 |
@@ -2362,7 +1911,7 @@ elif page.startswith("2"):
                     feat_info = [
                         ('amt_zscore', 'Данс доторх хэвийн бус дүн (>3σ)', lambda d: (d['amt_zscore'].abs()>3).sum()),
                         ('benford_dev', 'Бенфордын хазайлт (>0.05)', lambda d: (d['benford_dev']>0.05).sum()),
-                        ('is_round', 'Тэгш тоо (1000+)', lambda d: (d['is_round']>0).sum()),
+                        ('is_round', 'Тэгс тоо (1000+)', lambda d: (d['is_round']>0).sum()),
                         ('cp_rare', 'Ховор харилцагч (≤3 удаа)', lambda d: d['cp_rare'].sum()),
                         ('pair_rare', 'Ховор данс×харилцагч хос', lambda d: d['pair_rare'].sum()),
                         ('is_dup', 'Давхардсан гүйлгээ', lambda d: d['is_dup'].sum()),
@@ -2408,154 +1957,6 @@ elif page.startswith("2"):
                 st.write(f"Нийт: **{len(t_disp):,}** гүйлгээ")
                 st.dataframe(t_disp, use_container_width=True, hide_index=True, height=500)
                 st.download_button("📥 Хэвийн бус гүйлгээ CSV", t_disp.to_csv(index=False).encode('utf-8-sig'), "anomaly_txn.csv")
-
-                if len(t_disp) > 0 and 'account_code' in t_disp.columns:
-                    st.markdown("### 📦 Данс тус бүрээр татах")
-                    acct_codes_txn = sorted([str(x) for x in t_disp['account_code'].dropna().astype(str).unique().tolist()])
-                    s1, s2 = st.columns([1, 1])
-                    with s1:
-                        sel_acct_code = st.selectbox("Дансны код сонгох", acct_codes_txn, key='txn_acct_csv_sel')
-                    with s2:
-                        acct_one = t_disp[t_disp['account_code'].astype(str) == str(sel_acct_code)].copy()
-                        st.download_button(
-                            f"📥 {sel_acct_code} дансны CSV",
-                            acct_one.to_csv(index=False).encode('utf-8-sig'),
-                            f"anomaly_txn_{re.sub(r'[^\w\-.]+', '_', str(sel_acct_code))}.csv",
-                            key='dl_txn_one_acct'
-                        )
-
-                    zip_bytes = build_account_csv_zip(t_disp, base_name='anomaly_txn')
-                    st.download_button(
-                        "📥 Бүх дансыг ZIP-ээр татах",
-                        zip_bytes,
-                        "anomaly_txn_by_account.zip",
-                        mime="application/zip",
-                        key='dl_txn_zip'
-                    )
-
-                if len(ledger_month_recon) > 0 or len(tb_ledger_recon) > 0:
-                    st.markdown("### 📚 Данс тус бүрийн бүртгэлийн зөрүү (сар / жил)")
-                    st.caption("Сарын тайлан нь ledger доторх roll-forward зөрүүг, жилийн тайлан нь TB ба ledger-ийн тулгалтын зөрүүг харуулна.")
-
-                    r1, r2 = st.columns(2)
-                    with r1:
-                        if len(ledger_month_recon) > 0:
-                            monthly_diff_only = ledger_month_recon[ledger_month_recon['has_recording_diff'] == 1].copy()
-                            st.metric("Сарын зөрүүтэй мөр", f"{len(monthly_diff_only):,}")
-                    with r2:
-                        if len(tb_ledger_recon) > 0:
-                            yearly_diff_only = tb_ledger_recon[tb_ledger_recon['has_any_diff'] == 1].copy()
-                            st.metric("Жилийн зөрүүтэй данс", f"{len(yearly_diff_only):,}")
-
-                    acct_candidates = set()
-                    if len(ledger_month_recon) > 0:
-                        acct_candidates.update(ledger_month_recon['account_code'].dropna().astype(str).unique().tolist())
-                    if len(tb_ledger_recon) > 0:
-                        acct_candidates.update(tb_ledger_recon['account_code'].dropna().astype(str).unique().tolist())
-                    acct_candidates = sorted(acct_candidates)
-
-                    if acct_candidates:
-                        rc1, rc2 = st.columns([1,1])
-                        with rc1:
-                            sel_recon_acct = st.selectbox("Бүртгэлийн зөрүү харах данс", acct_candidates, key='recon_acct_sel')
-                        monthly_one = ledger_month_recon[ledger_month_recon['account_code'].astype(str) == str(sel_recon_acct)].copy() if len(ledger_month_recon) > 0 else pd.DataFrame()
-                        yearly_one = tb_ledger_recon[tb_ledger_recon['account_code'].astype(str) == str(sel_recon_acct)].copy() if len(tb_ledger_recon) > 0 else pd.DataFrame()
-
-                        if not monthly_one.empty:
-                            st.write("**Сараар**")
-                            st.dataframe(monthly_one, use_container_width=True, hide_index=True, height=240)
-                        if not yearly_one.empty:
-                            st.write("**Жилээр**")
-                            st.dataframe(yearly_one, use_container_width=True, hide_index=True, height=200)
-
-                        merged_buf = io.BytesIO()
-                        with pd.ExcelWriter(merged_buf, engine='openpyxl') as w:
-                            if not yearly_one.empty:
-                                yearly_one.to_excel(w, sheet_name='yearly', index=False)
-                            if not monthly_one.empty:
-                                monthly_one.to_excel(w, sheet_name='monthly', index=False)
-                        merged_buf.seek(0)
-                        with rc2:
-                            st.download_button(
-                                f"📥 {sel_recon_acct} дансны сар+жилийн Excel",
-                                merged_buf.getvalue(),
-                                f"account_reconciliation_{re.sub(r'[^\w\-.]+', '_', str(sel_recon_acct))}.xlsx",
-                                key='dl_recon_one_excel'
-                            )
-
-                    cdl1, cdl2, cdl3 = st.columns(3)
-                    with cdl1:
-                        if len(ledger_month_recon) > 0:
-                            st.download_button(
-                                "📥 Сарын бүртгэлийн зөрүү CSV",
-                                ledger_month_recon.to_csv(index=False).encode('utf-8-sig'),
-                                "ledger_monthly_recording_diff.csv",
-                                key='dl_month_recon_csv'
-                            )
-                    with cdl2:
-                        if len(tb_ledger_recon) > 0:
-                            st.download_button(
-                                "📥 Жилийн TB-Ledger тулгалт CSV",
-                                tb_ledger_recon.to_csv(index=False).encode('utf-8-sig'),
-                                "tb_ledger_yearly_reconciliation.csv",
-                                key='dl_year_recon_csv'
-                            )
-                    with cdl3:
-                        recon_zip = build_account_recon_zip(tb_ledger_recon, ledger_month_recon, base_name='account_reconciliation')
-                        if recon_zip:
-                            st.download_button(
-                                "📥 Бүх дансыг сар/жилийн ZIP-ээр татах",
-                                recon_zip,
-                                "account_reconciliation_by_account.zip",
-                                mime='application/zip',
-                                key='dl_recon_zip'
-                            )
-
-                st.markdown("---")
-                st.markdown("### 🧾 ААБ 5.3 асуудлын бүртгэл рүү хөрвүүлэх")
-                st.caption("Гүйлгээний түвшний эрсдэлийн шинжилгээнээс гарсан үр дүнг Асуудлын бүртгэл 5.3 загварт нэгтгэнэ.")
-                issue_template = st.file_uploader("📎 Асуудлын бүртгэл 5.3 загвар (.xlsx)", type=['xlsx'], key='issue_template_txn')
-                i1, i2 = st.columns(2)
-                with i1:
-                    top_n_issue = st.number_input("Оруулах дээд мөрийн тоо", min_value=5, max_value=300, value=50, step=5, key='issue_top_n_txn')
-                with i2:
-                    fallback_mat = float(st.session_state.get('materiality_overall', 0.0) or 0.0)
-                    overall_issue_mat = st.number_input("Нийт материаллаг байдлын fallback босго", min_value=0.0, value=fallback_mat, step=1000000.0, format="%.2f", key='issue_overall_mat_txn')
-
-                issue_df = build_issue_register_from_txn(
-                    t_disp,
-                    materiality_df=st.session_state.get('materiality_df', pd.DataFrame()),
-                    overall_materiality=overall_issue_mat,
-                    top_n=top_n_issue
-                )
-                if not issue_df.empty:
-                    st.write(f"Нэгтгэсэн асуудлын мөр: **{len(issue_df):,}**")
-                    st.dataframe(issue_df, use_container_width=True, hide_index=True, height=320)
-                    st.download_button(
-                        "📥 Асуудлын бүртгэлийн мөрүүд CSV",
-                        issue_df.to_csv(index=False).encode('utf-8-sig'),
-                        "issue_register_ai_rows.csv",
-                        "text/csv",
-                        key='dl_issue_rows_csv'
-                    )
-                    if issue_template is not None:
-                        try:
-                            issue_template.seek(0)
-                            wb_tmp = pd.ExcelFile(issue_template)
-                            sheet_options = [s for s in wb_tmp.sheet_names if s != 'НЭГТГЭСЭН-АБ'] or wb_tmp.sheet_names
-                            issue_template.seek(0)
-                            sel_sheet = st.selectbox("Загвар sheet сонгох", sheet_options, key='issue_template_sheet_txn')
-                            issue_xlsx = build_issue_register_workbook(issue_template, issue_df, target_sheet=sel_sheet, insert_row=12)
-                            st.download_button(
-                                "📥 ААБ 5.3-д шингээсэн Excel татах",
-                                issue_xlsx,
-                                "Асуудлын_бүртгэл_5_3_AI.xlsx",
-                                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                                key='dl_issue_workbook'
-                            )
-                        except Exception as e:
-                            st.warning(f"⚠️ Асуудлын бүртгэлийн файлыг боловсруулахад алдаа гарлаа: {e}")
-
             next_idx += 1
 
             with all_tabs[next_idx]:
@@ -2630,6 +2031,175 @@ elif page.startswith("2"):
                 fig_mo.update_layout(height=500)
                 st.plotly_chart(fig_mo, use_container_width=True)
                 td.show_monthly_trend_interpretation()
+            next_idx += 1
+
+        # ── 📊 Бүртгэлийн зөрүүгийн шинжилгээ ──
+        if has_account:
+            with all_tabs[next_idx]:
+                st.subheader("📊 Бүртгэлийн зөрүүгийн шинжилгээ (ISA 520)")
+                st.markdown("""
+                <div style="background:#e3f2fd; padding:12px; border-radius:8px; border-left:4px solid #1565c0; margin-bottom:15px;">
+                <b>ISA 520 — Шинжилгээний процедур:</b> Данс бүрийн эхний үлдэгдэл + эргэлт = эцсийн үлдэгдэл 
+                тэнцэж байгаа эсэхийг шалгана. Зөрүүтэй дансууд нь бүртгэлийн алдаа, орхигдсон гүйлгээ, 
+                буруу ангилал зэргийг илтгэнэ.
+                </div>
+                """, unsafe_allow_html=True)
+
+                # ═══ ЖИЛИЙН ТҮВШНИЙ ЗӨРҮҮ ═══
+                st.markdown("### 📅 Жилийн түвшний бүртгэлийн зөрүү")
+                recon_rows = []
+                for yv in yrs:
+                    yr_df = df[df['year'] == yv].copy()
+                    for _, row in yr_df.iterrows():
+                        od = pd.to_numeric(row.get('opening_debit', 0), errors='coerce') or 0
+                        oc = pd.to_numeric(row.get('opening_credit', 0), errors='coerce') or 0
+                        td_v = pd.to_numeric(row.get('turnover_debit', 0), errors='coerce') or 0
+                        tc_v = pd.to_numeric(row.get('turnover_credit', 0), errors='coerce') or 0
+                        cd = pd.to_numeric(row.get('closing_debit', 0), errors='coerce') or 0
+                        cc = pd.to_numeric(row.get('closing_credit', 0), errors='coerce') or 0
+                        opening_net = od - oc
+                        turnover_net = td_v - tc_v
+                        closing_net = cd - cc
+                        expected_closing = opening_net + turnover_net
+                        diff = closing_net - expected_closing
+                        if abs(diff) > 0.01:  # ₮0.01-аас дээш зөрүү
+                            recon_rows.append({
+                                'Жил': yv,
+                                'Дансны код': row.get('account_code', ''),
+                                'Дансны нэр': str(row.get('account_name', ''))[:40],
+                                'Эхний үлдэгдэл': round(opening_net, 2),
+                                'Дебит эргэлт': round(td_v, 2),
+                                'Кредит эргэлт': round(tc_v, 2),
+                                'Цэвэр эргэлт': round(turnover_net, 2),
+                                'Хүлээгдэх үлдэгдэл': round(expected_closing, 2),
+                                'Бодит үлдэгдэл': round(closing_net, 2),
+                                'Зөрүү (₮)': round(diff, 2),
+                                'Зөрүүний хувь (%)': round(abs(diff) / max(abs(expected_closing), 1) * 100, 2),
+                            })
+                recon_df = pd.DataFrame(recon_rows)
+
+                if len(recon_df) > 0:
+                    # Нэгтгэл тоонууд
+                    rc1, rc2, rc3, rc4 = st.columns(4)
+                    rc1.metric("Нийт данс", f"{len(df):,}")
+                    rc2.metric("Зөрүүтэй данс", f"{len(recon_df):,}", delta=f"{len(recon_df)/max(len(df),1)*100:.1f}%", delta_color="inverse")
+                    rc3.metric("Нийт зөрүүний дүн", f"₮{recon_df['Зөрүү (₮)'].abs().sum():,.0f}")
+                    rc4.metric("Хамгийн их зөрүү", f"₮{recon_df['Зөрүү (₮)'].abs().max():,.0f}")
+
+                    # Шүүлтүүр
+                    yr_filter = st.selectbox("Жил:", ['Бүгд'] + [str(y) for y in yrs], key='recon_yr')
+                    min_diff = st.slider("Зөрүүний доод босго (₮):", 0, int(max(recon_df['Зөрүү (₮)'].abs().max(), 1000)), 0, key='recon_min')
+
+                    show_recon = recon_df.copy()
+                    if yr_filter != 'Бүгд':
+                        show_recon = show_recon[show_recon['Жил'] == int(yr_filter)]
+                    if min_diff > 0:
+                        show_recon = show_recon[show_recon['Зөрүү (₮)'].abs() >= min_diff]
+                    show_recon = show_recon.sort_values('Зөрүү (₮)', key=abs, ascending=False)
+
+                    st.write(f"**{len(show_recon):,}** зөрүүтэй данс")
+                    st.dataframe(show_recon, use_container_width=True, hide_index=True, height=400)
+
+                    # Топ 20 зөрүүтэй дансны график
+                    if len(show_recon) > 0:
+                        top20 = show_recon.head(20).copy()
+                        top20['abs_diff'] = top20['Зөрүү (₮)'].abs()
+                        top20['label'] = top20['Дансны код'].astype(str) + ' ' + top20['Дансны нэр'].astype(str)
+                        fig_recon = px.bar(top20, y='label', x='Зөрүү (₮)', orientation='h',
+                            color='Зөрүү (₮)', color_continuous_scale='RdBu_r',
+                            title='Зөрүү хамгийн их 20 данс')
+                        fig_recon.update_layout(height=max(350, len(top20)*22), yaxis={'categoryorder':'total ascending'})
+                        st.plotly_chart(fig_recon, use_container_width=True)
+
+                    # Татах
+                    buf_recon = io.BytesIO()
+                    with pd.ExcelWriter(buf_recon, engine='openpyxl') as w:
+                        recon_df.to_excel(w, sheet_name='Жилийн_зөрүү', index=False)
+                    buf_recon.seek(0)
+                    st.download_button("📥 Жилийн зөрүү татах (Excel)", buf_recon.getvalue(),
+                        f"recon_yearly.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key='dl_recon_yr')
+                else:
+                    st.success("✅ Бүх дансны бүртгэл тааралдаж байна — зөрүү олдсонгүй.")
+
+                # ═══ САРЫН ТҮВШНИЙ ЗӨРҮҮ ═══
+                if has_mo and len(mo_all) > 0:
+                    st.markdown("---")
+                    st.markdown("### 📆 Сарын түвшний бүртгэлийн зөрүү")
+                    st.markdown("""
+                    <div style="font-size:13px; color:#555; margin-bottom:8px;">
+                    Данс тус бүрийн сарын эргэлт (дебит − кредит) ба сарын эцсийн үлдэгдлийн хоорондох зөрүүг шалгана.
+                    Сар хооронд үлдэгдэл нь тогтвортой шилжиж байгаа эсэхийг баталгаажуулна.
+                    </div>
+                    """, unsafe_allow_html=True)
+
+                    mo_data = mo_all.copy()
+                    for c in ['total_debit_mnt','total_credit_mnt','ending_balance_mnt','transaction_count']:
+                        if c in mo_data.columns:
+                            mo_data[c] = pd.to_numeric(mo_data[c], errors='coerce').fillna(0)
+
+                    if 'account_code' in mo_data.columns and 'month' in mo_data.columns:
+                        # Данс бүрийн сарын зөрүү тооцох
+                        monthly_recon = []
+                        for (yr_val, acct), grp in mo_data.groupby([mo_data.get('year', mo_data.get('report_year', pd.Series('', index=mo_data.index))), 'account_code']):
+                            grp = grp.sort_values('month')
+                            prev_balance = 0
+                            for _, mrow in grp.iterrows():
+                                db = mrow.get('total_debit_mnt', 0)
+                                cr = mrow.get('total_credit_mnt', 0)
+                                end_bal = mrow.get('ending_balance_mnt', 0)
+                                expected = prev_balance + db - cr
+                                diff = end_bal - expected
+                                if abs(diff) > 0.01:
+                                    monthly_recon.append({
+                                        'Он': yr_val,
+                                        'Сар': mrow.get('month', ''),
+                                        'Дансны код': acct,
+                                        'Өмнөх үлдэгдэл': round(prev_balance, 2),
+                                        'Дебит': round(db, 2),
+                                        'Кредит': round(cr, 2),
+                                        'Хүлээгдэх': round(expected, 2),
+                                        'Бодит үлдэгдэл': round(end_bal, 2),
+                                        'Зөрүү (₮)': round(diff, 2),
+                                    })
+                                prev_balance = end_bal
+
+                        mo_recon_df = pd.DataFrame(monthly_recon)
+                        if len(mo_recon_df) > 0:
+                            mr1, mr2 = st.columns(2)
+                            mr1.metric("Сарын зөрүүтэй бичилт", f"{len(mo_recon_df):,}")
+                            mr2.metric("Нийт зөрүүний дүн", f"₮{mo_recon_df['Зөрүү (₮)'].abs().sum():,.0f}")
+
+                            mo_year_f = st.selectbox("Он:", ['Бүгд'] + sorted([str(y) for y in mo_recon_df['Он'].dropna().unique()]), key='mo_recon_yr')
+                            show_mo_recon = mo_recon_df.copy()
+                            if mo_year_f != 'Бүгд':
+                                show_mo_recon = show_mo_recon[show_mo_recon['Он'].astype(str) == mo_year_f]
+                            show_mo_recon = show_mo_recon.sort_values('Зөрүү (₮)', key=abs, ascending=False)
+                            st.dataframe(show_mo_recon, use_container_width=True, hide_index=True, height=400)
+
+                            # Татах
+                            buf_mo = io.BytesIO()
+                            with pd.ExcelWriter(buf_mo, engine='openpyxl') as w:
+                                mo_recon_df.to_excel(w, sheet_name='Сарын_зөрүү', index=False)
+                            buf_mo.seek(0)
+                            st.download_button("📥 Сарын зөрүү татах (Excel)", buf_mo.getvalue(),
+                                f"recon_monthly.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                key='dl_recon_mo')
+                        else:
+                            st.success("✅ Сарын түвшинд зөрүү олдсонгүй.")
+
+                # ═══ БҮГДИЙГ НЭГТГЭЖ ТАТАХ ═══
+                st.markdown("---")
+                if len(recon_df) > 0:
+                    all_buf = io.BytesIO()
+                    with pd.ExcelWriter(all_buf, engine='openpyxl') as w:
+                        recon_df.to_excel(w, sheet_name='Жилийн_зөрүү', index=False)
+                        if has_mo and 'mo_recon_df' in dir() and len(mo_recon_df) > 0:
+                            mo_recon_df.to_excel(w, sheet_name='Сарын_зөрүү', index=False)
+                    all_buf.seek(0)
+                    st.download_button("📥 Бүх зөрүүг нэгтгэж татах (Excel)", all_buf.getvalue(),
+                        f"reconciliation_full.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key='dl_recon_all')
 
         td.show_dashboard_footer()
 
