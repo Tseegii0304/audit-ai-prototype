@@ -1095,7 +1095,7 @@ def engineer_txn_features(d):
     af = d[d['benford_digit']>0]['benford_digit'].value_counts(normalize=True)
     d['benford_dev'] = d['benford_digit'].map(lambda x: abs(af.get(x,0)-benford_exp.get(x,0)) if x>0 else 0)
 
-    # Тэгс тоо
+    # Тэгш тоо
     d['is_round'] = (((d['amount']>=1e6)&(d['amount']%1e6==0)).astype(int) + ((d['amount']>=1e3)&(d['amount']%1e3==0)).astype(int))
 
     # Данс доторх z-score
@@ -1215,7 +1215,7 @@ def run_txn_anomaly(df, cont=0.05):
         df['desc_mismatch'] * 2 +        # Тайлбар↔данс зөрчил (ISA 500)
         df['name_no_overlap'] * 1 +      # Нэр давхцахгүй (ISA 500)
         df['dir_mismatch'] * 3 +         # Чиглэлийн зөрчил (ISA 240) — жин нэмсэн
-        df.get('is_round', pd.Series(0, index=df.index)).astype(int) * 1  # Тэгс тоо
+        df.get('is_round', pd.Series(0, index=df.index)).astype(int) * 1  # Тэгш тоо
     )
     df['txn_risk_level'] = pd.cut(df['txn_risk'], bins=[-1,3,7,12,100],
         labels=['🟢 Бага','🟡 Дунд','🟠 Өндөр','🔴 Маш өндөр'])
@@ -2317,7 +2317,7 @@ elif page.startswith("2"):
 |---|-----------|-------------|-----|----------------|
 | 1 | **Данс доторх хэвийн бус дүн** (`amt_zscore`) | Тухайн дансны дундажаас хэт зөрсөн гүйлгээ | ISA 520 | >3σ → +2 |
 | 2 | **Бенфордын хуулийн хазайлт** (`benford_dev`) | Эхний оронгийн тархалт зөрсөн → тоон манипуляцийн шинж | ISA 240 | IF-д орно |
-| 3 | **Тэгс тоо** (`is_round`) | Бүхэл/тэгс дүнтэй сэжигтэй гүйлгээ (1сая, 10сая) | ISA 240 | 1сая+ → +1 |
+| 3 | **Тэгш тоо** (`is_round`) | Бүхэл/тэгш дүнтэй сэжигтэй гүйлгээ (1сая, 10сая) | ISA 240 | 1сая+ → +1 |
 | 4 | **Ховор харилцагч** (`cp_rare`) | ≤3 удаа гарсан шинэ/сэжигтэй харилцагч | ISA 550 | +1 |
 | 5 | **Ховор данс×харилцагч хос** (`pair_rare`) | Тухайн данс + тухайн харилцагч хослол ер бусын | ISA 550 | +1 |
 | 6 | **Давхардсан гүйлгээ** (`is_dup`) | Ижил данс + ижил дүн + ижил огноо | ISA 240 | +2 |
@@ -2362,7 +2362,7 @@ elif page.startswith("2"):
                     feat_info = [
                         ('amt_zscore', 'Данс доторх хэвийн бус дүн (>3σ)', lambda d: (d['amt_zscore'].abs()>3).sum()),
                         ('benford_dev', 'Бенфордын хазайлт (>0.05)', lambda d: (d['benford_dev']>0.05).sum()),
-                        ('is_round', 'Тэгс тоо (1000+)', lambda d: (d['is_round']>0).sum()),
+                        ('is_round', 'Тэгш тоо (1000+)', lambda d: (d['is_round']>0).sum()),
                         ('cp_rare', 'Ховор харилцагч (≤3 удаа)', lambda d: d['cp_rare'].sum()),
                         ('pair_rare', 'Ховор данс×харилцагч хос', lambda d: d['pair_rare'].sum()),
                         ('is_dup', 'Давхардсан гүйлгээ', lambda d: d['is_dup'].sum()),
