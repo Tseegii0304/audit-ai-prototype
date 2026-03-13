@@ -859,6 +859,149 @@ def run_ml(tb_all, cont, n_est):
     return df, X, y, feats, res, best, fi, ym
 
 # ═══════════════════════════════════════
+# 🏷️ ДАНСНЫ АНГИЛАЛ — ХАСАХ БҮЛГҮҮД
+# ═══════════════════════════════════════
+# 6 бүлэг: шимтгэл, хаалтын бичилт, идэвхгүй, тогтмол зардал, коммунал, үндсэн орлого
+
+EXCL_RULES = {
+    'шимтгэл': {
+        'label': '🏦 Шимтгэл, хураамж, татвар',
+        'help': 'Банкны шимтгэл, ХХОАт, НДШ, НӨАт, хүү зэрэг давтамжтай, бага дүнтэй бичилтүүд',
+        'default': True,
+        'account_prefixes': ['7027','7028','7029','354','356','3541','3542','3543','3544'],
+        'name_keywords': [
+            'шимтгэл','хураамж','банкны шимтгэл','үйлчилгээний хураамж',
+            'комисс','commission','fee','bank charge','service charge',
+            'тэмдэгтийн хураамж','нийгмийн даатгал','ндш','ххоат','нөат','vat',
+            'хүү','interest','алданги','торгууль','penalty',
+        ],
+        'desc_keywords': [
+            'шимтгэл','хураамж','commission','fee','interest','хүү','алданги',
+        ],
+    },
+    'хаалтын_бичилт': {
+        'label': '📕 Хаалтын бичилт, залруулга',
+        'help': 'Жилийн эцсийн хаалт, залруулга, буцаалт, сторно, нээлтийн бичилтүүд',
+        'default': True,
+        'account_prefixes': [],
+        'name_keywords': [],
+        'desc_keywords': [
+            'хаалт','хаах','closing','close','year end','year-end',
+            'жилийн эцсийн','хаалтын бичилт','тайлант үеийн хаалт',
+            'залруулга','adjustment','adjusting','аудитын залруулга',
+            'буцаалт','reversal','сторно','storno',
+            'нээлтийн бичилт','opening entry','нээлт',
+            'хуримтлагдсан элэгдэл','элэгдэл тооцох','depreciation',
+        ],
+    },
+    'идэвхгүй': {
+        'label': '⏸️ Идэвхгүй данс (эргэлтгүй)',
+        'help': 'Тухайн жилд ямар ч эргэлтгүй (дебит=0, кредит=0) данснууд',
+        'default': True,
+        'account_prefixes': [],
+        'name_keywords': [],
+        'desc_keywords': [],
+    },
+    'тогтмол_зардал': {
+        'label': '📋 Тогтмол зардал (цалин, түрээс г.м.)',
+        'help': 'Цалин, НДШ, түрээс, даатгал, элэгдэл зэрэг сар бүр давтагддаг зардлууд',
+        'default': False,
+        'account_prefixes': ['701','702','703','704','706','710','711','712','713','714','7011','7012','7013','7014','7021','7022','7023'],
+        'name_keywords': [
+            'цалин','хөдөлмөрийн хөлс','salary','wage','цалингийн',
+            'түрээс','rent','lease','түрээсийн',
+            'даатгал','insurance','даатгалын',
+            'элэгдэл','depreciation','хорогдол','amortization',
+            'нөөц','provision','нөөцийн',
+            'тэтгэмж','тэтгэвэр','pension',
+            'урамшуулал','bonus',
+        ],
+        'desc_keywords': [
+            'цалин','salary','түрээс','rent','даатгал','insurance',
+            'элэгдэл','depreciation','нөөц','provision',
+        ],
+    },
+    'коммунал': {
+        'label': '💡 Коммунал (тог, ус, дулаан, холбоо)',
+        'help': 'Цахилгаан, ус, дулаан, интернет, утас, шуудан зэрэг коммунал зардлууд',
+        'default': False,
+        'account_prefixes': ['7024','7025','7026'],
+        'name_keywords': [
+            'цахилгаан','электр','electricity','power',
+            'ус','усны','water',
+            'дулаан','дулааны','heating','heat',
+            'тог','тогны',
+            'холбоо','холбооны','утас','утасны','telephone','phone','telecom',
+            'интернет','internet','сүлжээ','network',
+            'шуудан','шуудангийн','postal',
+            'коммунал','utility','utilities',
+        ],
+        'desc_keywords': [
+            'цахилгаан','electricity','ус','water','дулаан','heating',
+            'тог','утас','phone','интернет','internet','коммунал','utility',
+        ],
+    },
+    'үндсэн_орлого': {
+        'label': '💰 Үндсэн үйл ажиллагааны орлого',
+        'help': 'Борлуулалтын орлого, үйлчилгээний орлого — бизнесийн үндсэн урсгал',
+        'default': False,
+        'account_prefixes': ['511','512','521','522','531','532','601','602','611','612'],
+        'name_keywords': [
+            'борлуулалтын орлого','борлуулалт','sales revenue','revenue',
+            'үйлчилгээний орлого','service revenue','service income',
+            'үндсэн үйл ажиллагааны орлого','operating revenue',
+            'бараа борлуулсны орлого','бүтээгдэхүүн борлуулалт',
+            'ажил үйлчилгээний орлого',
+        ],
+        'desc_keywords': [
+            'борлуулалт','sales','орлого','revenue','income',
+        ],
+    },
+}
+
+def classify_exclusions(df, level='account'):
+    """Данс/гүйлгээг 6 хасах ангилалд хуваана.
+    Returns: df with 'exclusion_tag' column
+    Tags: 'шимтгэл','хаалтын_бичилт','идэвхгүй','тогтмол_зардал','коммунал','үндсэн_орлого','' (хасахгүй)
+    """
+    d = df.copy()
+    d['exclusion_tag'] = ''
+    code_str = d['account_code'].astype(str) if 'account_code' in d.columns else pd.Series('', index=d.index)
+    name_lower = d['account_name'].astype(str).str.lower() if 'account_name' in d.columns else pd.Series('', index=d.index)
+
+    if level == 'transaction':
+        desc_lower = d['transaction_description'].astype(str).str.lower() if 'transaction_description' in d.columns else pd.Series('', index=d.index)
+        combined = name_lower + ' ' + desc_lower
+    else:
+        combined = name_lower
+
+    # ── Дүрмүүдийг дарааллаар хэрэглэх (эхнийх нь давуу) ──
+    for tag, rule in EXCL_RULES.items():
+        if tag == 'идэвхгүй':
+            continue  # Идэвхгүйг тусад нь шалгана
+        untagged = d['exclusion_tag'] == ''
+        # Дансны код prefix
+        for prefix in rule.get('account_prefixes', []):
+            mask = code_str.str.startswith(prefix) & untagged
+            d.loc[mask, 'exclusion_tag'] = tag
+        # Нэр/тайлбар keyword
+        kws = rule.get('desc_keywords', []) if level == 'transaction' else rule.get('name_keywords', [])
+        for kw in kws:
+            mask = combined.str.contains(kw, na=False, regex=False) & (d['exclusion_tag'] == '')
+            d.loc[mask, 'exclusion_tag'] = tag
+
+    # ── Идэвхгүй данс (эргэлт = 0) — зөвхөн дансны түвшинд ──
+    if level == 'account':
+        for c in ['turnover_debit', 'turnover_credit']:
+            if c not in d.columns: d[c] = 0
+        turn_total = pd.to_numeric(d['turnover_debit'], errors='coerce').fillna(0).abs() + \
+                     pd.to_numeric(d['turnover_credit'], errors='coerce').fillna(0).abs()
+        d.loc[(turn_total == 0) & (d['exclusion_tag'] == ''), 'exclusion_tag'] = 'идэвхгүй'
+
+    return d
+
+
+# ═══════════════════════════════════════
 # 🧠 УХААЛАГ ФАЙЛ ТАНИХ СИСТЕМ
 # ═══════════════════════════════════════
 def detect_file_type(f):
@@ -1390,6 +1533,23 @@ elif page.startswith("2"):
                  "200 = тэнцвэртэй (анхдагч). "
                  "500 = удаан, өндөр нарийвчлал.")
 
+    # ── Хасах бүлгүүдийн тохиргоо ──
+    with st.expander("🏷️ Эрсдэлийн шинжилгээнээс хасах бүлгүүд", expanded=False):
+        st.markdown("""
+        <div style="font-size:13px; color:#555; margin-bottom:8px;">
+        Доорх ангиллын данс/гүйлгээг эрсдэлийн жагсаалтаас хасна.
+        Шинжилгээнд хамрагдсан хэвээр байх ч "хэвийн бус" жагсаалтад орохгүй.
+        </div>
+        """, unsafe_allow_html=True)
+        excl_settings = {}
+        cols_excl = st.columns(3)
+        for i, (tag, rule) in enumerate(EXCL_RULES.items()):
+            with cols_excl[i % 3]:
+                excl_settings[tag] = st.checkbox(
+                    rule['label'], value=rule['default'],
+                    help=rule['help'], key=f'excl_{tag}'
+                )
+
     has_any = tb_files or led_files
     if st.button("🚀 Шинжилгээ", type="primary", use_container_width=True) and has_any:
         # Дансны түвшний шинжилгээ (TB + Ledger хоёулаа байвал)
@@ -1436,6 +1596,12 @@ elif page.startswith("2"):
                     txn_result, _ = run_txn_anomaly(txn_s, cont)
                 except Exception as e:
                     st.warning(f"⚠️ Гүйлгээний шинжилгээ алдаа: {e}")
+        # ── Хасах бүлгүүдийн ангилал нэмэх ──
+        if len(df) > 0:
+            df = classify_exclusions(df, level='account')
+        if len(txn_result) > 0:
+            txn_result = classify_exclusions(txn_result, level='transaction')
+
         # Store all results in session_state
         st.session_state['analysis_done'] = True
         st.session_state['df'] = df
@@ -1451,6 +1617,7 @@ elif page.startswith("2"):
         st.session_state['rm_all'] = rm_all
         st.session_state['mo_all'] = mo_all
         st.session_state['txn_result'] = txn_result
+        st.session_state['excl_settings'] = excl_settings
 
     # Display results from session_state (persists across reruns)
     if 'analysis_done' not in st.session_state:
@@ -1505,7 +1672,21 @@ elif page.startswith("2"):
                 m1, m2, m3, m4 = st.columns(4)
                 m1.metric("Данс", f"{len(df):,}")
                 m2.metric("Гүйлгээ", f"{sum(d['rows'] for d in led_st.values()):,}")
-                m3.metric("Хэвийн бус данс", f"{df['ensemble_anomaly'].sum():,} ({df['ensemble_anomaly'].mean()*100:.1f}%)")
+
+                # Хасалтын дараах хэвийн бус дансны тоо
+                _excl = st.session_state.get('excl_settings', {t: r['default'] for t, r in EXCL_RULES.items()})
+                anom_df = df[df['ensemble_anomaly'] == 1].copy()
+                n_raw = len(anom_df)
+                if 'exclusion_tag' in anom_df.columns:
+                    excl_tags = [t for t, on in _excl.items() if on]
+                    if excl_tags:
+                        anom_df = anom_df[~anom_df['exclusion_tag'].isin(excl_tags)]
+                n_filtered = len(anom_df)
+                excl_cnt = n_raw - n_filtered
+                m3_label = f"{n_filtered:,}"
+                if excl_cnt > 0:
+                    m3_label += f" (хасалтын өмнө: {n_raw})"
+                m3.metric("Хэвийн бус данс", m3_label)
                 m4.metric("Шилдэг загвар", f"{best} F1={res[best]['f1']:.4f}")
                 if has_rm:
                     mr1, mr2 = st.columns(2)
@@ -1629,14 +1810,41 @@ elif page.startswith("2"):
             st.info("Гүйлгээ-баланс + Ерөнхий журнал файл шаардлагатай")
           else:
             td.show_list_description()
-            adf = df[df['ensemble_anomaly'] == 1][['year', 'account_code', 'account_name', 'turnover_debit', 'turnover_credit', 'turn_ratio', 'log_abs_change']].copy()
+            adf = df[df['ensemble_anomaly'] == 1].copy()
+
+            # ── Хасах бүлгүүдийн шүүлтүүр ──
+            _excl = st.session_state.get('excl_settings', {t: r['default'] for t, r in EXCL_RULES.items()})
+            if 'exclusion_tag' in adf.columns:
+                n_before = len(adf)
+                excl_tags = [t for t, on in _excl.items() if on]
+                # Бүлэг тус бүрийн тоо
+                tag_counts = {t: (adf['exclusion_tag'] == t).sum() for t in excl_tags}
+                if excl_tags:
+                    adf = adf[~adf['exclusion_tag'].isin(excl_tags)]
+                n_after = len(adf)
+                n_excluded = n_before - n_after
+                if n_excluded > 0:
+                    details = ', '.join(f"{EXCL_RULES[t]['label'].split(' ',1)[-1]}: {c}" for t, c in tag_counts.items() if c > 0)
+                    st.markdown(f"""
+                    <div style="background:#fff3e0; padding:10px; border-radius:8px; border-left:4px solid #ff9800; margin-bottom:10px; font-size:13px;">
+                    <b>🏷️ Хасагдсан:</b> Нийт {n_before} хэвийн бус данснаас <b>{n_excluded}</b> хасагдлаа
+                    ({details})
+                    → Шинжилгээнд <b>{n_after}</b> данс үлдлээ.
+                    </div>
+                    """, unsafe_allow_html=True)
+
+            show_cols = ['year', 'account_code', 'account_name', 'turnover_debit', 'turnover_credit', 'turn_ratio', 'log_abs_change']
+            if 'exclusion_tag' in adf.columns:
+                show_cols.append('exclusion_tag')
+            adf_show = adf[[c for c in show_cols if c in adf.columns]]
+
             yf = st.selectbox("Жил", ['Бүгд'] + [str(y2) for y2 in yrs])
             if yf != 'Бүгд':
-                adf = adf[adf['year'] == int(yf)]
-            st.write(f"Нийт: {len(adf)}")
-            st.dataframe(adf, use_container_width=True, hide_index=True, height=500)
-            st.download_button("📥 CSV", adf.to_csv(index=False).encode('utf-8-sig'), "anomaly.csv", "text/csv")
-            td.show_list_interpretation(n_anomalies=len(adf))
+                adf_show = adf_show[adf_show['year'] == int(yf)]
+            st.write(f"Нийт: **{len(adf_show)}** хэвийн бус данс")
+            st.dataframe(adf_show, use_container_width=True, hide_index=True, height=500)
+            st.download_button("📥 CSV", adf_show.to_csv(index=False).encode('utf-8-sig'), "anomaly.csv", "text/csv")
+            td.show_list_interpretation(n_anomalies=len(adf_show))
 
         # ── Гүйлгээний түвшний шинжилгээний табууд ──
         next_idx = 5
@@ -1730,7 +1938,19 @@ elif page.startswith("2"):
                 t_show = txn_result[txn_result['txn_anomaly']==1].copy() if risk_f=='Бүгд' else txn_result[txn_result['txn_risk_level']==risk_f].copy()
                 if year_f != 'Бүгд' and 'report_year' in t_show.columns:
                     t_show = t_show[t_show['report_year'].astype(str)==year_f]
-                cols_show = ['txn_risk_level','txn_risk','report_year','account_code','account_name','counterparty_name','transaction_date','debit_mnt','credit_mnt','transaction_description','desc_mismatch','name_no_overlap','dir_mismatch','amt_zscore','is_dup','cp_rare']
+
+                # ── Хасах бүлгүүд ──
+                _excl = st.session_state.get('excl_settings', {t: r['default'] for t, r in EXCL_RULES.items()})
+                if 'exclusion_tag' in t_show.columns:
+                    n_txn_before = len(t_show)
+                    excl_tags = [t for t, on in _excl.items() if on and t != 'идэвхгүй']
+                    if excl_tags:
+                        t_show = t_show[~t_show['exclusion_tag'].isin(excl_tags)]
+                    n_txn_excluded = n_txn_before - len(t_show)
+                    if n_txn_excluded > 0:
+                        st.caption(f"🏷️ {n_txn_excluded} гүйлгээ хасагдсан")
+
+                cols_show = ['txn_risk_level','txn_risk','report_year','account_code','account_name','counterparty_name','transaction_date','debit_mnt','credit_mnt','transaction_description','desc_mismatch','name_no_overlap','dir_mismatch','amt_zscore','is_dup','cp_rare','exclusion_tag']
                 t_disp = t_show[[c for c in cols_show if c in t_show.columns]].sort_values('txn_risk', ascending=False)
                 st.write(f"Нийт: **{len(t_disp):,}** гүйлгээ")
                 st.dataframe(t_disp, use_container_width=True, hide_index=True, height=500)
