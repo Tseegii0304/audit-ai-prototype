@@ -1,5 +1,5 @@
 """
-АУДИТЫН ХОУ ПРОТОТИП v3.4
+Аудитын эрсдэл илрүүлэх хиймэл оюуны систем v4.0
 TB + Ledger + Part1 → Бүрэн шинжилгээ
 pip install streamlit pandas numpy scikit-learn plotly openpyxl
 streamlit run audit_app.py
@@ -21,13 +21,13 @@ from collections import Counter
 warnings.filterwarnings('ignore')
 from tab_descriptions import TabDescriptions
 td = TabDescriptions()
-st.set_page_config(page_title="Аудитын ХОУ v3.4", page_icon="🔍", layout="wide")
-st.markdown('<h1 style="text-align:center;color:#1565c0">🔍 Аудитын ХОУ Прототип v3.4</h1>', unsafe_allow_html=True)
-st.markdown('<p style="text-align:center;color:#666">TB + Ledger + Part1 → Бүрэн шинжилгээ</p>', unsafe_allow_html=True)
+st.set_page_config(page_title="Аудитын эрсдэл илрүүлэх систем v4.0", page_icon="🔍", layout="wide")
+st.markdown('<h1 style="text-align:center;color:#1565c0">🔍 Аудитын эрсдэл илрүүлэх хиймэл оюуны систем</h1>', unsafe_allow_html=True)
+st.markdown('<p style="text-align:center;color:#666;font-size:14px">Гүйлгээ-баланс + Ерөнхий журнал → Дансны болон гүйлгээний түвшний эрсдэл илрүүлэлт • Материаллаг байдлын тооцоо</p>', unsafe_allow_html=True)
 
 with st.sidebar:
-    st.header("📌 Цэс")
-    page = st.radio("Цэс:", ["1️⃣ Файл бэлтгэх", "2️⃣ Аудитын шинжилгээ", "3️⃣ Материаллаг байдлын тооцоо"])
+    st.header("📌 Системийн цэс")
+    page = st.radio("Үндсэн цэс:", ["1️⃣ Өгөгдөл оруулах", "2️⃣ Эрсдэлийн шинжилгээ", "3️⃣ Материаллаг байдлын тооцоо"])
 
 ACCT_RE_B = re.compile(r'Данс:\s*\[([^\]]+)\]\s*(.*)')
 ACCT_RE_P = re.compile(r'Данс:\s*(\d{3}-\d{2}-\d{2}-\d{3})\s+(.*)')
@@ -984,19 +984,19 @@ def build_materiality_by_account(tb_df, overall_materiality, performance_ratio=0
 
 FILE_TYPE_LABELS = {
     'raw_tb': ('📗 ГҮЙЛГЭЭ_БАЛАНС', 'Гүйлгээ-балансын түүхий файл → TB болгон хөрвүүлнэ'),
-    'edt': ('📘 Ерөнхий журнал (ЕЖ)', 'Ерөнхий журналын гүйлгээ → Гүйлгээ + Нэгтгэл болгон хөрвүүлнэ'),
+    'edt': ('📘 Ерөнхий журнал (ЕЖ)', 'Ерөнхий журналын гүйлгээ → Стандарт формат руу хөрвүүлнэ'),
     'tb_std': ('📊 TB_standardized', 'Стандартчилсан гүйлгээ-баланс → Шинжилгээнд бэлэн'),
     'ledger': ('📄 Гүйлгээний файл (CSV/GZ)', 'Гүйлгээний дэлгэрэнгүй файл → Шинжилгээнд бэлэн'),
     'part1': ('📈 Нэгтгэл файл', 'Сарын нэгтгэл + Эрсдэлийн матриц → Шинжилгээнд бэлэн'),
     'unknown': ('❓ Тодорхойгүй', 'Файлын төрлийг таних боломжгүй'),
 }
 if page.startswith("1"):
-    st.header("1️⃣ Файл бэлтгэх")
+    st.header("1️⃣ Өгөгдөл оруулах, хөрвүүлэх")
     st.markdown("""
     <div style="background-color: #E3F2FD; padding: 15px; border-radius: 8px; border-left: 4px solid #1565C0; margin-bottom: 15px;">
         <b>📂 Ямар ч файлыг оруулаарай!</b> Систем автоматаар таниж, зөв формат руу хөрвүүлнэ.<br>
         <span style="color: #555; font-size: 13px;">
-        Дэмжих файлууд: ГҮЙЛГЭЭ_БАЛАНС (.xlsx), ЕЖ (.xlsx) — хэдэн ч файл, ямар ч дараалал
+        Дэмжих файлууд: ГҮЙЛГЭЭ_БАЛАНС (.xlsx), Ерөнхий журнал (.xlsx) — хэдэн ч файл, ямар ч дараалал
         </span>
     </div>
     """, unsafe_allow_html=True)
@@ -1048,7 +1048,7 @@ if page.startswith("1"):
                     for d in edts:
                         edt_by_year.setdefault(d['year'], []).append(d['file'])
                     for yr in sorted(edt_by_year):
-                        with st.spinner(f"📘 Ерөнхий журнал (ЕЖ) {yr} хөрвүүлж байна ({len(edt_by_year[yr])} файл)..."):
+                        with st.spinner(f"📘 Ерөнхий журнал {yr} хөрвүүлж байна ({len(edt_by_year[yr])} файл)..."):
                             frames = []
                             for f in edt_by_year[yr]:
                                 f.seek(0)
@@ -1082,7 +1082,7 @@ if page.startswith("1"):
                 c1x, c2x, c3x = st.columns(3)
                 c1x.metric("Гүйлгээ", f"{len(dfy):,}")
                 c2x.metric("Дансны бичилтийн тоо", f"{len(p1_rm):,}")
-                c3x.metric("Эрсдэлтэй", f"{n_risk:,}")
+                c3x.metric("Эрсдэлтэй бичилт", f"{n_risk:,}")
                 gz_bytes = gzip.compress(dfy[cols_out].to_csv(index=False).encode('utf-8'))
                 st.download_button(f"📥 ledger_{yr}.csv.gz", gz_bytes, f"prototype_ledger_{yr}.csv.gz", key=f"dled{yr}")
                 st.download_button(f"📥 part1_{yr}.xlsx", p1_buf.getvalue(), f"prototype_part1_{yr}.xlsx", key=f"dp1{yr}")
@@ -1091,12 +1091,12 @@ if page.startswith("1"):
 # 2️⃣ ШИНЖИЛГЭЭ
 # ═══════════════════════════════════════
 elif page.startswith("2"):
-    st.header("2️⃣ Аудитын шинжилгээ")
+    st.header("2️⃣ Аудитын эрсдэлийн шинжилгээ")
     st.markdown("""
     <div style="background-color: #E8F5E9; padding: 15px; border-radius: 8px; border-left: 4px solid #2E7D32; margin-bottom: 15px;">
-        <b>📂 Ямар ч файлаа нэг дор оруулаарай!</b> Систем автоматаар таниж, хөрвүүлж, шинжилгээг ажиллуулна.<br>
+        <b>📂 Бүх файлаа нэг дор оруулна уу.</b> Систем автоматаар формат таниж, стандарт хэлбэр рүү хөрвүүлж, шинжилгээг ажиллуулна.<br>
         <span style="color: #555; font-size: 13px;">
-        ГҮЙЛГЭЭ_БАЛАНС, ЕЖ, TB, Ledger, Part1 — бүгдийг нь оруулаад болно. Систем өөрөө ялгана.
+        ГҮЙЛГЭЭ_БАЛАНС, Ерөнхий журнал, TB, Ledger, Нэгтгэл — бүгдийг нь оруулаад болно. Систем өөрөө ялгана.
         </span>
     </div>
     """, unsafe_allow_html=True)
@@ -1150,7 +1150,7 @@ elif page.startswith("2"):
                     else:
                         st.warning(f"⚠️ {d['name']} — TB мөр уншигдсангүй. Формат шалгана уу.")
             elif d['type'] == 'edt':
-                # Auto-convert ЕЖ → Гүйлгээ + Нэгтгэл
+                # ЕЖ → Гүйлгээ + Нэгтгэл хөрвүүлэх
                 with st.spinner(f"📘 {d['name']} → Гүйлгээ + Нэгтгэл хөрвүүлж байна..."):
                     d['file'].seek(0)
                     df_edt, cnt = process_edt(d['file'], d['year'])
@@ -1182,9 +1182,9 @@ elif page.startswith("2"):
         elif led_files and not tb_files:
             st.success(f"🎯 Гүйлгээний шинжилгээнд бэлэн: Ledger {len(led_files)} файл (TB нэмбэл дансны шинжилгээ ч ажиллана)")
         elif tb_files and not led_files:
-            st.info("👆 Ledger (.csv/.gz) эсвэл ЕЖ (.xlsx) файл нэмнэ үү")
+            st.info("👆 Гүйлгээний файл (.csv/.gz) эсвэл Ерөнхий журнал (.xlsx) файл нэмнэ үү")
         elif not tb_files and not led_files and not need_convert:
-            st.info("👆 TB + Ledger файлуудаа оруулна уу")
+            st.info("👆 Гүйлгээ-баланс + Ерөнхий журнал файлуудаа оруулна уу")
 
     st.markdown("""
     <div style="background:#F5F5F5; padding:12px; border-radius:8px; margin-bottom:10px;">
@@ -1193,14 +1193,14 @@ elif page.startswith("2"):
     """, unsafe_allow_html=True)
     c1s, c2s = st.columns(2)
     with c1s:
-        cont = st.slider("🎯 IF contamination — Тусгаарлалтын ойн хэвийн бус хувь", 0.05, 0.20, 0.10, 0.01,
-            help="Isolation Forest (Тусгаарлалтын ой) алгоритм нийт дансны хэдэн хувийг хэвийн бус гэж үзэх. "
+        cont = st.slider("🎯 Хэвийн бус дансны хувь (Isolation Forest)", 0.05, 0.20, 0.10, 0.01,
+            help="Нийт дансны хэдэн хувийг хэвийн бус гэж үзэхийг тодорхойлно. "
                  "0.05 (5%) = зөвхөн хамгийн сэжигтэй 5%. "
                  "0.10 (10%) = 10% илрүүлнэ (анхдагч). "
                  "0.20 (20%) = илүү өргөн хүрээтэй шалгана.")
     with c2s:
-        nest = st.slider("🌲 RF n_estimators — Санамсаргүй ойн модны тоо", 50, 500, 200, 50,
-            help="Random Forest (Санамсаргүй ой) загварын модны тоо. "
+        nest = st.slider("🌲 Шийдвэрийн модны тоо (Random Forest)", 50, 500, 200, 50,
+            help="Шийдвэрийн модны тоо ихсэх тусам нарийвчлал нэмэгдэж, хурд буурна. "
                  "50 = хурдан, бага нарийвчлал. "
                  "200 = тэнцвэртэй (анхдагч). "
                  "500 = удаан, өндөр нарийвчлал.")
@@ -1301,32 +1301,32 @@ elif page.startswith("2"):
         yrs = sorted(tb_st.keys()) if tb_st else []
         bp = res[best]['pred'] if has_account and best else np.array([])
 
-        tab_names = ["📊 Нэгтгэл", "🔍 Хэвийн бус данс", "⚖️ ХОУ ↔ Уламжлалт", "🧠 Тайлбарлагдах ХОУ", "📋 Жагсаалт"]
+        tab_names = ["📊 Ерөнхий нэгтгэл", "🔍 Хэвийн бус дансны илрүүлэлт", "⚖️ Загварын гүйцэтгэлийн үнэлгээ", "🧠 Тайлбарлагдах хиймэл оюун (XAI)", "📋 Хэвийн бус дансны жагсаалт"]
         if has_txn:
-            tab_names.append("🔴 Гүйлгээний эрсдэл")
-            tab_names.append("👤 Харилцагчаар")
+            tab_names.append("🔴 Гүйлгээний түвшний эрсдэлийн шинжилгээ")
+            tab_names.append("👤 Харилцагч ба дансаар нэгтгэх")
         if has_rm:
-            tab_names.append("🎯 Эрсдэлийн матриц")
+            tab_names.append("🎯 Эрсдэлийн үнэлгээний матриц")
         if has_mo:
-            tab_names.append("📈 Сарын хандлага")
+            tab_names.append("📈 Сарын гүйлгээний хандлага")
 
         all_tabs = st.tabs(tab_names)
 
         with all_tabs[0]:
             if not has_account:
-                st.info("📊 TB + Ledger файлуудыг оруулахад дансны түвшний шинжилгээ идэвхжинэ. ЕЖ файлаар зөвхөн гүйлгээний шинжилгээ ажиллана.")
+                st.info("📊 Гүйлгээ-баланс + Ерөнхий журнал файлуудыг оруулахад дансны түвшний шинжилгээ идэвхжинэ. Зөвхөн ЕЖ файлаар гүйлгээний шинжилгээ хийгдэнэ.")
             else:
                 td.show_summary_description(n_accounts=len(df), n_transactions=n_led, n_entries=len(rm_all) if has_rm else 0)
                 m1, m2, m3, m4 = st.columns(4)
                 m1.metric("Данс", f"{len(df):,}")
                 m2.metric("Гүйлгээ", f"{sum(d['rows'] for d in led_st.values()):,}")
-                m3.metric("Аномали", f"{df['ensemble_anomaly'].sum():,} ({df['ensemble_anomaly'].mean()*100:.1f}%)")
-                m4.metric("Шилдэг", f"{best} F1={res[best]['f1']:.4f}")
+                m3.metric("Хэвийн бус данс", f"{df['ensemble_anomaly'].sum():,} ({df['ensemble_anomaly'].mean()*100:.1f}%)")
+                m4.metric("Шилдэг загвар", f"{best} F1={res[best]['f1']:.4f}")
                 if has_rm:
                     mr1, mr2 = st.columns(2)
-                    mr1.metric("Дансны бичилтийн тоо", f"{len(rm_all):,}")
+                    mr1.metric("Нийт дансны бичилт", f"{len(rm_all):,}")
                     mr2.metric("Эрсдэлтэй гүйлгээ", f"{len(rm_all[rm_all['risk_score']>0]):,}")
-                fg = make_subplots(rows=1, cols=3, subplot_titles=("Данс", "Гүйлгээний нийт дүн (тэрбум ₮)", "Гүйлгээний тоо"))
+                fg = make_subplots(rows=1, cols=3, subplot_titles=("Нийт данс", "Гүйлгээний нийт дүн (тэрбум ₮)", "Гүйлгээний тоо"))
                 cl3 = ['#2196F3', '#4CAF50', '#FF9800']
                 for i, yv in enumerate(yrs):
                     fg.add_trace(go.Bar(x=[str(yv)], y=[tb_st[yv]['accounts']], marker_color=cl3[i % 3], showlegend=False), row=1, col=1)
@@ -1339,7 +1339,7 @@ elif page.startswith("2"):
 
         with all_tabs[1]:
           if not has_account:
-            st.info("TB + Ledger файл шаардлагатай")
+            st.info("Гүйлгээ-баланс + Ерөнхий журнал файл шаардлагатай")
           else:
             td.show_anomaly_description()
             mt = {'Isolation Forest': 'iso_anomaly', 'Z-score': 'zscore_anomaly', 'Turn ratio': 'turn_anomaly', 'ENSEMBLE': 'ensemble_anomaly'}
@@ -1353,7 +1353,7 @@ elif page.startswith("2"):
                     row_d[str(yv)] = f"{int(cnt)} ({pct:.1f}%)"
                 ad.append(row_d)
             st.dataframe(pd.DataFrame(ad), use_container_width=True, hide_index=True)
-            st.plotly_chart(px.scatter(df, x='log_turn_d', y='log_abs_change', labels={'log_abs_change': 'Дансны цэвэр өөрчлөлт (log)'}, color=df['ensemble_anomaly'].map({0: 'Хэвийн', 1: 'Аномали'}), facet_col='year', opacity=0.5, color_discrete_map={'Хэвийн': '#90caf9', 'Аномали': '#c62828'}, height=400), use_container_width=True)
+            st.plotly_chart(px.scatter(df, x='log_turn_d', y='log_abs_change', labels={'log_abs_change':'Дансны цэвэр өөрчлөлт (log)','log_turn_d':'Дебит эргэлт (log)'}, color=df['ensemble_anomaly'].map({0: 'Хэвийн', 1: 'Аномали'}), facet_col='year', opacity=0.5, color_discrete_map={'Хэвийн': '#90caf9', 'Аномали': '#c62828'}, height=400), use_container_width=True)
             td.show_anomaly_interpretation(
                 n_if=int(df['iso_anomaly'].sum()),
                 n_zscore=int(df['zscore_anomaly'].sum()),
@@ -1363,7 +1363,7 @@ elif page.startswith("2"):
 
         with all_tabs[2]:
           if not has_account:
-            st.info("TB + Ledger файл шаардлагатай")
+            st.info("Гүйлгээ-баланс + Ерөнхий журнал файл шаардлагатай")
           else:
             td.show_ai_vs_mus_description()
             st.dataframe(pd.DataFrame([{'Загвар': n, 'Precision': f"{r['precision']:.4f}", 'Recall': f"{r['recall']:.4f}", 'F1': f"{r['f1']:.4f}", 'AUC': f"{r['auc']:.4f}"} for n, r in res.items()]), use_container_width=True, hide_index=True)
@@ -1372,9 +1372,9 @@ elif page.startswith("2"):
                 fpr, tpr, _ = roc_curve(y, r['prob'])
                 fg2.add_trace(go.Scatter(x=fpr, y=tpr, name=f"{n} (AUC={r['auc']:.4f})"))
             fg2.add_trace(go.Scatter(x=[0, 1], y=[0, 1], name='Random', line=dict(dash='dash', color='gray')))
-            fg2.update_layout(title='ROC Curve', height=400)
+            fg2.update_layout(title='ROC муруй — загварын ялгах чадварын харьцуулалт', height=400)
             st.plotly_chart(fg2, use_container_width=True)
-            st.subheader("Detection Risk")
+            st.subheader("📉 Илрүүлэлтийн эрсдэлийн харьцуулалт (ISA 200)")
             dr = []
             for yv in yrs:
                 mk = (df['year'] == yv).values
@@ -1398,17 +1398,17 @@ elif page.startswith("2"):
 
         with all_tabs[3]:
           if not has_account:
-            st.info("TB + Ledger файл шаардлагатай")
+            st.info("Гүйлгээ-баланс + Ерөнхий журнал файл шаардлагатай")
           else:
             td.show_xai_description()
-            st.plotly_chart(px.bar(fi, x='importance', y='feature', orientation='h', color='importance', color_continuous_scale='Blues', title='Feature Importance').update_layout(height=400, yaxis={'categoryorder': 'total ascending'}), use_container_width=True)
+            st.plotly_chart(px.bar(fi, x='importance', y='feature', orientation='h', color='importance', color_continuous_scale='Blues', title='Шинж чанарын ач холбогдлын шинжилгээ (XAI)').update_layout(height=400, yaxis={'categoryorder': 'total ascending'}), use_container_width=True)
             fi_dict = dict(zip(fi['feature'], fi['importance']))
             td.show_xai_feature_details(feature_importances=fi_dict)
             td.show_xai_interpretation()
 
         with all_tabs[4]:
           if not has_account:
-            st.info("TB + Ledger файл шаардлагатай")
+            st.info("Гүйлгээ-баланс + Ерөнхий журнал файл шаардлагатай")
           else:
             td.show_list_description()
             adf = df[df['ensemble_anomaly'] == 1][['year', 'account_code', 'account_name', 'turnover_debit', 'turnover_credit', 'turn_ratio', 'log_abs_change']].copy()
@@ -1424,10 +1424,10 @@ elif page.startswith("2"):
         next_idx = 5
         if has_txn:
             with all_tabs[next_idx]:
-                st.subheader("🔴 Гүйлгээний түвшний хэвийн бус байдал")
+                st.subheader("🔴 Гүйлгээний түвшний эрсдэлийн шинжилгээ (ISA 240, 520)")
                 st.markdown("""
                 <div style="background:#fce4ec; padding:12px; border-radius:8px; border-left:4px solid #c62828; margin-bottom:15px;">
-                <b>16 шинж чанараар</b> гүйлгээ бүрийг шинжилж хэвийн бус гүйлгээг илрүүлсэн.
+                <b>16 шинж чанараар</b> гүйлгээ бүрийг шинжилж, ISA стандартуудтай нийцсэн эрсдэлийн дүрмүүд ашиглан хэвийн бус гүйлгээг илрүүлсэн.
                 Дансны нэр, гүйлгээний тайлбар, харилцагч, дүн, цаг хугацаа бүгдийг тулган шалгана.
                 </div>
                 """, unsafe_allow_html=True)
@@ -1471,11 +1471,11 @@ elif page.startswith("2"):
                 c5.metric("Давхардсан", f"{txn_result['is_dup'].sum():,}")
                 c6.metric("Ховор харилцагч", f"{txn_result['cp_rare'].sum():,}")
                 c7.metric("Тайлбаргүй", f"{txn_result['desc_empty'].sum():,}")
-                c8.metric("Дүн хэт зөрсөн (>3σ)", f"{(txn_result['amt_zscore'].abs()>3).sum():,}")
+                c8.metric("Дундажаас хэт зөрсөн (>3σ)", f"{(txn_result['amt_zscore'].abs()>3).sum():,}")
 
                 # Эрсдэлийн түвшний тархалт
                 rl = txn_result['txn_risk_level'].value_counts().reindex(['🟢 Бага','🟡 Дунд','🟠 Өндөр','🔴 Маш өндөр']).fillna(0)
-                st.plotly_chart(px.bar(x=rl.index, y=rl.values, color=rl.index, color_discrete_map={'🟢 Бага':'#4CAF50','🟡 Дунд':'#FFC107','🟠 Өндөр':'#FF9800','🔴 Маш өндөр':'#F44336'}, labels={'x':'Эрсдэлийн түвшин','y':'Тоо'}, title="Гүйлгээний эрсдэлийн тархалт").update_layout(height=300, showlegend=False), use_container_width=True)
+                st.plotly_chart(px.bar(x=rl.index, y=rl.values, color=rl.index, color_discrete_map={'🟢 Бага':'#4CAF50','🟡 Дунд':'#FFC107','🟠 Өндөр':'#FF9800','🔴 Маш өндөр':'#F44336'}, labels={'x':'Эрсдэлийн түвшин','y':'Гүйлгээний тоо'}, title="Гүйлгээний эрсдэлийн түвшний тархалт").update_layout(height=300, showlegend=False), use_container_width=True)
 
                 # Шинж чанар бүрийн илрүүлэлтийн тойм
                 with st.expander("📊 Шинж чанар бүрийн илрүүлэлтийн тойм", expanded=False):
@@ -1520,7 +1520,7 @@ elif page.startswith("2"):
             next_idx += 1
 
             with all_tabs[next_idx]:
-                st.subheader("👤 Харилцагчаар нэгтгэсэн эрсдэл")
+                st.subheader("👤 Харилцагчаар нэгтгэсэн эрсдэлийн үнэлгээ")
                 txn_years2 = sorted(txn_result['report_year'].dropna().unique().tolist()) if 'report_year' in txn_result.columns else []
                 year_f2 = st.selectbox("Он:", ['Бүгд'] + [str(y) for y in txn_years2], key='cp_year_f')
                 txn_filtered = txn_result.copy()
@@ -1538,10 +1538,10 @@ elif page.startswith("2"):
                 st.download_button("📥 Харилцагчийн жагсаалт CSV", cp_r.to_csv(index=False).encode('utf-8-sig'), "counterparty_risk.csv", key='dl_cp')
                 top20 = cp_r.head(20)
                 if len(top20) > 0:
-                    st.plotly_chart(px.bar(top20, x='Хэвийн бус', y='Харилцагч', orientation='h', color='Дансны тоо', color_continuous_scale='Reds', title='Топ 20 — хэвийн бус гүйлгээтэй харилцагч').update_layout(height=500, yaxis={'categoryorder':'total ascending'}), use_container_width=True)
+                    st.plotly_chart(px.bar(top20, x='Хэвийн бус', y='Харилцагч', orientation='h', color='Дансны тоо', color_continuous_scale='Reds', title='Эрсдэл өндөртэй 20 харилцагч — хэвийн бус гүйлгээний тоо').update_layout(height=500, yaxis={'categoryorder':'total ascending'}), use_container_width=True)
                 # Дансаар
                 st.markdown("---")
-                st.subheader("🏷️ Дансаар нэгтгэсэн эрсдэл")
+                st.subheader("🏷️ Дансаар нэгтгэсэн эрсдэлийн үнэлгээ")
                 acct_r = txn_filtered.groupby(['account_code','account_name']).agg(
                     total=('amount','count'), anomaly=('txn_anomaly','sum'), desc_mis=('desc_mismatch','sum'), dir_mis=('dir_mismatch','sum')
                 ).reset_index()
@@ -1556,13 +1556,13 @@ elif page.startswith("2"):
         if has_rm:
             with all_tabs[next_idx]:
                 td.show_risk_matrix_description()
-                st.subheader("🎯 Эрсдэлийн матриц")
+                st.subheader("🎯 Эрсдэлийн үнэлгээний матриц")
                 rm_all['risk_score'] = pd.to_numeric(rm_all['risk_score'], errors='coerce').fillna(0)
                 rm_all['total_amount_mnt'] = pd.to_numeric(rm_all.get('total_amount_mnt', 0), errors='coerce').fillna(0)
                 rm_summary = []
                 for yv in sorted(rm_all['year'].unique()):
                     rmy = rm_all[rm_all['year'] == yv]
-                    rm_summary.append({'Жил': yv, 'Нийт бичилт': f"{len(rmy):,}", 'Эрсдэлтэй': f"{len(rmy[rmy['risk_score']>0]):,}", 'Хувь': f"{len(rmy[rmy['risk_score']>0])/max(len(rmy),1)*100:.1f}%"})
+                    rm_summary.append({'Жил': yv, 'Нийт хос': f"{len(rmy):,}", 'Эрсдэлтэй': f"{len(rmy[rmy['risk_score']>0]):,}", 'Хувь': f"{len(rmy[rmy['risk_score']>0])/max(len(rmy),1)*100:.1f}%"})
                 st.dataframe(pd.DataFrame(rm_summary), use_container_width=True, hide_index=True)
                 fig_rm = go.Figure()
                 for yv in sorted(rm_all['year'].unique()):
@@ -1570,7 +1570,7 @@ elif page.startswith("2"):
                     fig_rm.add_trace(go.Bar(x=['Нийт', 'Эрсдэлтэй'], y=[len(rmy), len(rmy[rmy['risk_score'] > 0])], name=str(yv)))
                 fig_rm.update_layout(barmode='group', height=350)
                 st.plotly_chart(fig_rm, use_container_width=True)
-                st.subheader("Топ 20 харилцагч")
+                st.subheader("📋 Эрсдэл өндөртэй 20 харилцагч")
                 top_cp = rm_all.groupby('counterparty_name').agg(txn=('transaction_count', 'sum'), accounts=('account_code', 'nunique')).sort_values('txn', ascending=False).head(20).reset_index()
                 top_cp.columns = ['Харилцагч', 'Гүйлгээний тоо', 'Дансны тоо']
                 st.dataframe(top_cp, use_container_width=True, hide_index=True)
@@ -1580,7 +1580,7 @@ elif page.startswith("2"):
         if has_mo:
             with all_tabs[next_idx]:
                 td.show_monthly_trend_description()
-                st.subheader("📈 Сарын чиг хандлага")
+                st.subheader("📈 Сарын гүйлгээний хандлага (ISA 520)")
                 mo_all['total_debit_mnt'] = pd.to_numeric(mo_all['total_debit_mnt'], errors='coerce').fillna(0)
                 mo_all['transaction_count'] = pd.to_numeric(mo_all['transaction_count'], errors='coerce').fillna(0)
                 mo_agg = mo_all.groupby('month').agg(debit=('total_debit_mnt', 'sum'), txn=('transaction_count', 'sum')).reset_index()
@@ -1595,7 +1595,7 @@ elif page.startswith("2"):
         td.show_dashboard_footer()
 
     if not st.session_state.get('analysis_done', False) and not has_any:
-        st.info("👆 Файлуудаа оруулна уу. TB + Ledger = бүрэн шинжилгээ. ЕЖ файлаар гүйлгээний шинжилгээ.")
+        st.info("👆 Файлуудаа оруулна уу. Гүйлгээ-баланс + Ерөнхий журнал = дансны болон гүйлгээний бүрэн шинжилгээ.")
 
 
 
@@ -1705,7 +1705,7 @@ elif page.startswith("3"):
                     x='account_code',
                     y='төлөвлөлтийн материаллаг байдал',
                     hover_data=['account_name','гүйцэтгэлийн материаллаг байдал','анхаарах доод дүн'],
-                    title='Материаллаг байдал хамгийн өндөр 20 данс'
+                    title='Материаллаг байдлын хуваарилалт — өндөр ач холбогдолтой 20 данс'
                 )
                 st.plotly_chart(fig, use_container_width=True)
 
