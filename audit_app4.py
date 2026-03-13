@@ -1,6 +1,6 @@
 """
 АУДИТЫН ХОУ ПРОТОТИП v3.4
-TB + Ledger + Part1 → Бүрэн шинжилгээ
+Өгөгдөл бэлтгэх • Аудитын шинжилгээ • Материаллаг байдлын тооцоо
 pip install streamlit pandas numpy scikit-learn plotly openpyxl
 streamlit run audit_app.py
 """
@@ -19,22 +19,15 @@ import warnings, io, re, gzip
 from datetime import datetime
 from collections import Counter
 warnings.filterwarnings('ignore')
-try:
-    from tab_descriptions import TabDescriptions
-except Exception:
-    class TabDescriptions:
-        def __getattr__(self, name):
-            def _noop(*args, **kwargs):
-                return None
-            return _noop
+from tab_descriptions import TabDescriptions
 td = TabDescriptions()
 st.set_page_config(page_title="Аудитын ХОУ v3.4", page_icon="🔍", layout="wide")
 st.markdown('<h1 style="text-align:center;color:#1565c0">🔍 Аудитын ХОУ Прототип v3.4</h1>', unsafe_allow_html=True)
-st.markdown('<p style="text-align:center;color:#666">TB + Ledger + Part1 → Бүрэн шинжилгээ</p>', unsafe_allow_html=True)
+st.markdown('<p style="text-align:center;color:#666">Өгөгдөл бэлтгэх • Аудитын шинжилгээ • Материаллаг байдлын тооцоо</p>', unsafe_allow_html=True)
 
 with st.sidebar:
-    st.header("📌 Аудитын ХОУ цэс")
-    page = st.radio("Алхам:", ["1️⃣ Өгөгдөл оруулах, бэлтгэх", "2️⃣ ХОУ шинжилгээ ажиллуулах"])
+    st.header("📌 Цэс")
+    page = st.radio("Цэс:", ["1️⃣ Өгөгдөл бэлтгэх", "2️⃣ Аудитын шинжилгээ", "3️⃣ Материаллаг байдлын тооцоо"])
 
 ACCT_RE_B = re.compile(r'Данс:\s*\[([^\]]+)\]\s*(.*)')
 ACCT_RE_P = re.compile(r'Данс:\s*(\d{3}-\d{2}-\d{2}-\d{3})\s+(.*)')
@@ -58,11 +51,11 @@ def safe_float(v):
 
 def process_raw_tb(file_obj):
     import openpyxl
-    wb = openpyxl.load_workbook(file_obj, read_only=True, data_only=True)
+    wb = openpyxl.load_workbook(file_obj, read_only=True)
     ws = wb[wb.sheetnames[0]]
     rows = []
     for row in ws.iter_rows(values_only=True):
-        if not row or row[0] is None:
+        if row[0] is None:
             continue
         try:
             int(float(row[0]))
@@ -82,16 +75,17 @@ def process_raw_tb(file_obj):
             'closing_credit': safe_float(row[8]) if len(row) > 8 else 0.0,
         })
     wb.close()
-    base_cols = ['account_code','account_name','opening_debit','opening_credit','turnover_debit','turnover_credit','closing_debit','closing_credit']
     if not rows:
-        empty_df = pd.DataFrame(columns=base_cols)
+        empty = pd.DataFrame(columns=['account_code','account_name','opening_debit','opening_credit',
+            'opening_balance_signed','turnover_debit','turnover_credit','turnover_net_signed',
+            'closing_debit','closing_credit','closing_balance_signed','net_change_signed'])
         buf = io.BytesIO()
         with pd.ExcelWriter(buf, engine='openpyxl') as w:
-            empty_df.to_excel(w, sheet_name='01_TB_CLEAN', index=False)
-            empty_df.to_excel(w, sheet_name='02_ACCOUNT_SUMMARY', index=False)
+            empty.to_excel(w, sheet_name='01_TB_CLEAN', index=False)
+            empty.to_excel(w, sheet_name='02_ACCOUNT_SUMMARY', index=False)
         buf.seek(0)
-        return buf, empty_df
-    df = pd.DataFrame(rows, columns=base_cols)
+        return buf, empty
+    df = pd.DataFrame(rows)
     df['opening_balance_signed'] = df['opening_debit'] - df['opening_credit']
     df['turnover_net_signed'] = df['turnover_debit'] - df['turnover_credit']
     df['closing_balance_signed'] = df['closing_debit'] - df['closing_credit']
@@ -101,10 +95,23 @@ def process_raw_tb(file_obj):
                   'closing_debit','closing_credit','closing_balance_signed','net_change_signed']].copy()
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine='openpyxl') as w:
-        df[base_cols].to_excel(w, sheet_name='01_TB_CLEAN', index=False)
+        df[['account_code','account_name','opening_debit','opening_credit','turnover_debit','turnover_credit','closing_debit','closing_credit']].to_excel(w, sheet_name='01_TB_CLEAN', index=False)
         tb_sum.to_excel(w, sheet_name='02_ACCOUNT_SUMMARY', index=False)
     buf.seek(0)
     return buf, tb_sum
+
+COL_PATTERNS = {
+    'account_code': ['дансны код','данс код','account code','account no','account number','acc code','код'],
+    'account_name': ['дансны нэр','данс нэр','account name','acc name','нэр'],
+    'transaction_date': ['огноо','date','transaction date','txn date'],
+    'debit_mnt': ['дебит','debit','dt','дт','debit amount'],
+    'credit_mnt': ['кредит','credit','ct','кт','credit amount'],
+    'balance_mnt': ['үлдэгдэл','balance','bal','ending balance'],
+    'counterparty_name': ['харилцагч','counterparty','partner','vendor','customer'],
+    'transaction_description': ['тайлбар','гүйлгээний утга','утга','description','memo','narration'],
+    'journal_no': ['журнал','journal','journal no'],
+    'document_no': ['баримт','document','doc no'],
+}
 def _match_col(h, field):
     h2 = str(h).lower().strip()
     return any(p in h2 for p in COL_PATTERNS.get(field, []))
@@ -286,28 +293,19 @@ def get_year(name):
 def load_tb(files):
     frames = []
     stats = {}
-    required_num = ['opening_debit','opening_credit','turnover_debit','turnover_credit','closing_debit','closing_credit','net_change_signed']
-    required_all = ['account_code','account_name'] + required_num
     for f in files:
         year = get_year(f.name)
-        try:
-            df = pd.read_excel(f, sheet_name='02_ACCOUNT_SUMMARY')
-        except Exception:
-            try:
-                df = pd.read_excel(f)
-            except Exception:
-                df = pd.DataFrame(columns=required_all)
-        for c in required_all:
-            if c not in df.columns:
-                df[c] = '' if c in ('account_code','account_name') else 0
+        df = pd.read_excel(f, sheet_name='02_ACCOUNT_SUMMARY')
         df['year'] = year
-        for c in required_num:
-            df[c] = pd.to_numeric(df[c], errors='coerce').fillna(0)
+        for c in ['turnover_debit', 'turnover_credit', 'closing_debit', 'closing_credit', 'opening_debit', 'opening_credit']:
+            if c in df.columns:
+                df[c] = pd.to_numeric(df[c], errors='coerce').fillna(0)
+        if 'net_change_signed' in df.columns:
+            df['net_change_signed'] = pd.to_numeric(df['net_change_signed'], errors='coerce').fillna(0)
         stats[year] = {'accounts': len(df), 'turnover_d': df['turnover_debit'].sum(), 'turnover_c': df['turnover_credit'].sum()}
         frames.append(df)
-    if not frames:
-        return pd.DataFrame(columns=required_all + ['year']), stats
     return pd.concat(frames, ignore_index=True), stats
+
 def load_ledger_stats(files):
     """Ledger файлуудыг уншиж stats + бүрэн DataFrame буцаана."""
     stats = {}
@@ -496,31 +494,20 @@ def run_txn_anomaly(df, cont=0.05):
 
 def run_ml(tb_all, cont, n_est):
     df = tb_all.copy()
-    need_num = ['turnover_debit','turnover_credit','closing_debit','closing_credit','opening_debit','opening_credit','net_change_signed']
-    for c in ['account_code','account_name','year'] + need_num:
-        if c not in df.columns:
-            df[c] = '' if c in ('account_code','account_name') else 0
-    for c in need_num + ['year']:
-        df[c] = pd.to_numeric(df[c], errors='coerce').fillna(0)
     df['cat_code'] = df['account_code'].astype(str).str[:3]
     le = LabelEncoder()
-    df['cat_num'] = le.fit_transform(df['cat_code']) if len(df) else pd.Series(dtype=int)
+    df['cat_num'] = le.fit_transform(df['cat_code'])
     df['log_turn_d'] = np.log1p(df['turnover_debit'].abs())
     df['log_turn_c'] = np.log1p(df['turnover_credit'].abs())
     df['log_close_d'] = np.log1p(df['closing_debit'].abs())
     df['log_close_c'] = np.log1p(df['closing_credit'].abs())
     df['turn_ratio'] = (df['turnover_debit'] / df['turnover_credit'].replace(0, np.nan)).fillna(0).replace([np.inf, -np.inf], 0)
-    df['log_abs_change'] = np.log1p(pd.to_numeric(df.get('net_change_signed', 0), errors='coerce').fillna(0).abs())
+    if 'net_change_signed' in df.columns:
+        df['log_abs_change'] = np.log1p(df['net_change_signed'].abs())
+    else:
+        df['log_abs_change'] = np.log1p((df['closing_debit'] - df['opening_debit']).abs())
     feats = ['cat_num', 'log_turn_d', 'log_turn_c', 'log_close_d', 'log_close_c', 'turn_ratio', 'log_abs_change', 'year']
     X = df[feats].fillna(0).replace([np.inf, -np.inf], 0)
-    if len(df) < 10 or X.empty:
-        y = np.zeros(len(df), dtype=int)
-        fi = pd.DataFrame({'feature': feats, 'importance': [0]*len(feats)})
-        res = {'Random Forest': {'pred': y, 'prob': np.zeros(len(df)), 'precision': 0.0, 'recall': 0.0, 'f1': 0.0, 'auc': 0.5}}
-        best = 'Random Forest'
-        ym = np.zeros(len(df), dtype=int)
-        df['iso_anomaly']=0; df['zscore_anomaly']=0; df['turn_anomaly']=0; df['ensemble_anomaly']=0
-        return df, X, y, feats, res, best, fi, ym
     iso = IsolationForest(contamination=cont, random_state=42, n_estimators=200)
     df['iso_anomaly'] = (iso.fit_predict(X) == -1).astype(int)
     sc = StandardScaler()
@@ -529,48 +516,32 @@ def run_ml(tb_all, cont, n_est):
     df['turn_anomaly'] = ((df['turn_ratio'] > p95) | (df['turn_ratio'] < -p95)).astype(int)
     df['ensemble_anomaly'] = ((df['iso_anomaly'] == 1) | ((df['zscore_anomaly'] == 1) & (df['turn_anomaly'] == 1))).astype(int)
     y = df['ensemble_anomaly'].values
-    uniq, counts = np.unique(y, return_counts=True)
-    if len(uniq) < 2 or counts.min() < 2:
-        fi = pd.DataFrame({'feature': feats, 'importance': [0]*len(feats)})
-        prob = y.astype(float)
-        res = {'Random Forest': {'pred': y, 'prob': prob, 'precision': 0.0, 'recall': 0.0, 'f1': 0.0, 'auc': 0.5}}
-        best = 'Random Forest'
-        ym = np.zeros(len(df), dtype=int)
-        return df, X, y, feats, res, best, fi, ym
-    n_splits = int(min(5, counts.min()))
-    cv = StratifiedKFold(n_splits=max(2, n_splits), shuffle=True, random_state=42)
+    cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
     models = {
         'Random Forest': RandomForestClassifier(n_estimators=n_est, max_depth=10, random_state=42, class_weight='balanced'),
-        'Gradient Boosting': GradientBoostingClassifier(n_estimators=150, learning_rate=0.1, random_state=42),
+        'Gradient Boosting': GradientBoostingClassifier(n_estimators=150, max_depth=5, learning_rate=0.1, random_state=42),
         'Logistic Regression': LogisticRegression(max_iter=1000, random_state=42, class_weight='balanced'),
     }
     res = {}
     for nm, mdl in models.items():
-        try:
-            yp = cross_val_predict(mdl, X, y, cv=cv, method='predict')
-            ypr = cross_val_predict(mdl, X, y, cv=cv, method='predict_proba')[:, 1] if hasattr(mdl, 'predict_proba') else yp.astype(float)
-            res[nm] = {'pred': yp, 'prob': ypr, 'precision': precision_score(y, yp, zero_division=0), 'recall': recall_score(y, yp, zero_division=0), 'f1': f1_score(y, yp, zero_division=0), 'auc': roc_auc_score(y, ypr)}
-        except Exception:
-            yp = np.zeros(len(y), dtype=int)
-            ypr = np.zeros(len(y))
-            res[nm] = {'pred': yp, 'prob': ypr, 'precision': 0.0, 'recall': 0.0, 'f1': 0.0, 'auc': 0.5}
+        yp = cross_val_predict(mdl, X, y, cv=cv, method='predict')
+        ypr = cross_val_predict(mdl, X, y, cv=cv, method='predict_proba')[:, 1]
+        res[nm] = {'pred': yp, 'prob': ypr, 'precision': precision_score(y, yp), 'recall': recall_score(y, yp), 'f1': f1_score(y, yp), 'auc': roc_auc_score(y, ypr)}
     best = max(res, key=lambda k: res[k]['f1'])
-    try:
-        rf = models['Random Forest']
-        rf.fit(X, y)
-        fi = pd.DataFrame({'feature': feats, 'importance': rf.feature_importances_}).sort_values('importance', ascending=False)
-    except Exception:
-        fi = pd.DataFrame({'feature': feats, 'importance': [0]*len(feats)})
+    rf = models['Random Forest']
+    rf.fit(X, y)
+    fi = pd.DataFrame({'feature': feats, 'importance': rf.feature_importances_}).sort_values('importance', ascending=False)
     nt = len(df)
-    ns = max(1, int(nt * 0.20))
+    ns = int(nt * 0.20)
     at = df['turnover_debit'].abs() + df['turnover_credit'].abs()
-    wt = at / at.sum() if at.sum() > 0 else pd.Series(1/nt, index=df.index)
-    wt = wt.fillna(1/nt)
+    wt = at / at.sum()
+    wt = wt.fillna(1 / nt)
     np.random.seed(42)
     ms = np.zeros(nt, dtype=int)
     ms[np.random.choice(nt, size=ns, replace=False, p=wt.values)] = 1
     ym = (ms & y).astype(int)
     return df, X, y, feats, res, best, fi, ym
+
 # ═══════════════════════════════════════
 # 🧠 УХААЛАГ ФАЙЛ ТАНИХ СИСТЕМ
 # ═══════════════════════════════════════
@@ -685,8 +656,142 @@ FILE_TYPE_LABELS = {
     'part1': ('📈 Part1', 'Сарын нэгтгэл + Эрсдэлийн матриц → Шинжилгээнд бэлэн'),
     'unknown': ('❓ Тодорхойгүй', 'Файлын төрлийг таних боломжгүй'),
 }
+
+
+def _empty_tb_summary():
+    cols = ['account_code','account_name','opening_debit','opening_credit','opening_balance_signed',
+            'turnover_debit','turnover_credit','turnover_net_signed',
+            'closing_debit','closing_credit','closing_balance_signed','net_change_signed']
+    return pd.DataFrame(columns=cols)
+
+def build_account_summary_from_ledger(df_led, year):
+    """TB байхгүй үед ledger-ээс дансны түвшний товчоон гаргана."""
+    if df_led is None or len(df_led) == 0:
+        return _empty_tb_summary()
+    d = df_led.copy()
+    for c in ['debit_mnt','credit_mnt','balance_mnt']:
+        if c not in d.columns:
+            d[c] = 0
+        d[c] = pd.to_numeric(d[c], errors='coerce').fillna(0)
+    if 'account_code' not in d.columns:
+        return _empty_tb_summary()
+    if 'account_name' not in d.columns:
+        d['account_name'] = ''
+    d['account_code'] = d['account_code'].astype(str)
+    # opening balance approximated as first balance - first net movement if balance exists, else 0
+    d = d.sort_values(['account_code','transaction_date','transaction_no'], na_position='last')
+    grp = d.groupby('account_code', dropna=False)
+    first_bal = grp['balance_mnt'].first()
+    first_db = grp['debit_mnt'].first()
+    first_cr = grp['credit_mnt'].first()
+    opening_signed = (first_bal - (first_db - first_cr)).fillna(0)
+    summary = grp.agg(
+        account_name=('account_name','first'),
+        turnover_debit=('debit_mnt','sum'),
+        turnover_credit=('credit_mnt','sum'),
+        closing_balance_signed=('balance_mnt','last')
+    ).reset_index()
+    summary['opening_balance_signed'] = summary['account_code'].map(opening_signed).fillna(0)
+    summary['closing_balance_signed'] = pd.to_numeric(summary['closing_balance_signed'], errors='coerce').fillna(
+        summary['opening_balance_signed'] + summary['turnover_debit'] - summary['turnover_credit']
+    )
+    summary['opening_debit'] = np.where(summary['opening_balance_signed'] >= 0, summary['opening_balance_signed'], 0)
+    summary['opening_credit'] = np.where(summary['opening_balance_signed'] < 0, -summary['opening_balance_signed'], 0)
+    summary['closing_debit'] = np.where(summary['closing_balance_signed'] >= 0, summary['closing_balance_signed'], 0)
+    summary['closing_credit'] = np.where(summary['closing_balance_signed'] < 0, -summary['closing_balance_signed'], 0)
+    summary['turnover_net_signed'] = summary['turnover_debit'] - summary['turnover_credit']
+    summary['net_change_signed'] = summary['closing_balance_signed'] - summary['opening_balance_signed']
+    cols = ['account_code','account_name','opening_debit','opening_credit','opening_balance_signed',
+            'turnover_debit','turnover_credit','turnover_net_signed',
+            'closing_debit','closing_credit','closing_balance_signed','net_change_signed']
+    return summary[cols]
+
+def prepare_tb_summaries_for_materiality(files):
+    """Материаллаг байдлын тооцоонд ашиглах дансны товчоон дата бэлтгэнэ."""
+    outputs = []
+    detected_rows = []
+    for f in files:
+        ftype, year = detect_file_type(f)
+        f.seek(0)
+        detected_rows.append({'Файл': f.name, 'Төрөл': FILE_TYPE_LABELS.get(ftype, FILE_TYPE_LABELS['unknown'])[0], 'Он': year})
+        try:
+            if ftype == 'tb_std':
+                df = pd.read_excel(f, sheet_name='02_ACCOUNT_SUMMARY')
+                df['year'] = year
+                outputs.append(df)
+            elif ftype == 'raw_tb':
+                buf, tb = process_raw_tb(f)
+                if tb is not None and len(tb) > 0:
+                    tb['year'] = year
+                    outputs.append(tb)
+            elif ftype == 'ledger':
+                led = read_ledger(f)
+                tb = build_account_summary_from_ledger(led, year)
+                if len(tb) > 0:
+                    tb['year'] = year
+                    outputs.append(tb)
+            elif ftype == 'edt':
+                led, cnt = process_edt(f, year)
+                if cnt > 0:
+                    tb = build_account_summary_from_ledger(led, year)
+                    if len(tb) > 0:
+                        tb['year'] = year
+                        outputs.append(tb)
+        except Exception:
+            continue
+    df_all = pd.concat(outputs, ignore_index=True) if outputs else _empty_tb_summary()
+    return df_all, pd.DataFrame(detected_rows)
+
+def calculate_materiality_by_account(tb_df, benchmark_value, planning_pct=0.01, performance_factor=0.75, trivial_factor=0.05):
+    """Данс тус бүрээр материаллаг байдлын хуваарилалт тооцно."""
+    if tb_df is None or len(tb_df) == 0:
+        return pd.DataFrame(), {}
+    d = tb_df.copy()
+    for c in ['closing_debit','closing_credit','turnover_debit','turnover_credit','opening_debit','opening_credit','closing_balance_signed']:
+        if c not in d.columns:
+            d[c] = 0
+        d[c] = pd.to_numeric(d[c], errors='coerce').fillna(0)
+    if 'account_name' not in d.columns:
+        d['account_name'] = ''
+    if 'account_code' not in d.columns:
+        return pd.DataFrame(), {}
+    d['дансны_үлдэгдэл'] = d['closing_debit'].abs() + d['closing_credit'].abs()
+    if d['дансны_үлдэгдэл'].sum() <= 0:
+        d['дансны_үлдэгдэл'] = d['turnover_debit'].abs() + d['turnover_credit'].abs()
+    d['дансны_үлдэгдэл'] = d['дансны_үлдэгдэл'].fillna(0)
+    total_basis = float(max(d['дансны_үлдэгдэл'].sum(), 1))
+    planning = float(benchmark_value) * float(planning_pct)
+    performance = planning * float(performance_factor)
+    trivial = planning * float(trivial_factor)
+    d['жин'] = d['дансны_үлдэгдэл'] / total_basis
+    d['төлөвлөлтийн_материаллаг_байдал'] = planning * d['жин']
+    d['гүйцэтгэлийн_материаллаг_байдал'] = performance * d['жин']
+    d['анхаарал_хандуулах_доод_дүн'] = trivial * d['жин']
+    d['дансны_эрсдэлийн_түвшин'] = pd.cut(
+        d['жин'],
+        bins=[-0.001, 0.02, 0.08, 1.0],
+        labels=['Хэвийн', 'Анхаарах', 'Өндөр ач холбогдол']
+    ).astype(str)
+    out_cols = [
+        'year','account_code','account_name','дансны_үлдэгдэл','turnover_debit','turnover_credit',
+        'жин','төлөвлөлтийн_материаллаг_байдал','гүйцэтгэлийн_материаллаг_байдал',
+        'анхаарал_хандуулах_доод_дүн','дансны_эрсдэлийн_түвшин'
+    ]
+    for c in out_cols:
+        if c not in d.columns:
+            d[c] = ''
+    summary = {
+        'суурь_үзүүлэлт': benchmark_value,
+        'төлөвлөлтийн_материаллаг_байдал': planning,
+        'гүйцэтгэлийн_материаллаг_байдал': performance,
+        'анхаарал_хандуулах_доод_дүн': trivial,
+        'дансны_тоо': int(len(d))
+    }
+    return d[out_cols].sort_values(['дансны_үлдэгдэл','turnover_debit'], ascending=False), summary
+
+
 if page.startswith("1"):
-    st.header("1️⃣ Өгөгдөл оруулах, бэлтгэх")
+    st.header("1️⃣ Өгөгдөл бэлтгэх")
     st.markdown("""
     <div style="background-color: #E3F2FD; padding: 15px; border-radius: 8px; border-left: 4px solid #1565C0; margin-bottom: 15px;">
         <b>📂 Ямар ч файлыг оруулаарай!</b> Систем автоматаар таниж, зөв формат руу хөрвүүлнэ.<br>
@@ -731,11 +836,11 @@ if page.startswith("1"):
                         with st.spinner(f"📗 ГҮЙЛГЭЭ_БАЛАНС {d['year']} хөрвүүлж байна..."):
                             d['file'].seek(0)
                             buf, tb_s = process_raw_tb(d['file'])
-                            if tb_s.empty:
-                                st.warning(f"⚠️ {d['name']} файлаас TB мөр уншигдсангүй. Формат шалгана уу.")
-                            else:
+                            if len(tb_s) > 0:
                                 st.session_state.tb_res[d['year']] = {'buf': buf.getvalue(), 'tb': tb_s}
                                 st.success(f"✅ TB {d['year']}: {len(tb_s):,} данс")
+                            else:
+                                st.warning(f"⚠️ {d['name']}: 0 данс уншигдсан — файлын формат шалгана уу.")
                 if edts:
                     if 'led_res' not in st.session_state:
                         st.session_state.led_res = {}
@@ -786,17 +891,17 @@ if page.startswith("1"):
 # 2️⃣ ШИНЖИЛГЭЭ
 # ═══════════════════════════════════════
 elif page.startswith("2"):
-    st.header("2️⃣ ХОУ шинжилгээ ажиллуулах")
+    st.header("2️⃣ Аудитын шинжилгээ")
     st.markdown("""
     <div style="background-color: #E8F5E9; padding: 15px; border-radius: 8px; border-left: 4px solid #2E7D32; margin-bottom: 15px;">
-        <b>📂 Ямар ч файлаа нэг дор оруулаарай!</b> Систем автоматаар таниж, хөрвүүлж, шинжилгээг ажиллуулна.<br>
+        <b>📂 Шинжилгээнд ашиглах бүх файлаа нэг дор оруулна уу!</b> Систем автоматаар таниж, хөрвүүлж, шинжилгээг ажиллуулна.<br>
         <span style="color: #555; font-size: 13px;">
-        ГҮЙЛГЭЭ_БАЛАНС, ЕДТ, TB, Ledger, Part1 — бүгдийг нь оруулаад болно. Систем өөрөө ялгана.
+        Гүйлгээ‑баланс, ерөнхий дэвтэр, стандартчилсан TB, ерөнхий дэвтрийн гүйлгээ, Part1 файлуудыг нэг дор оруулж болно; систем өөрөө ялгана.
         </span>
     </div>
     """, unsafe_allow_html=True)
 
-    all_files = st.file_uploader("📎 Бүх файлуудаа энд оруулна уу (ямар ч формат, хэдэн ч файл)", type=['xlsx', 'csv', 'gz'], accept_multiple_files=True, key='smart_analysis')
+    all_files = st.file_uploader("📎 Шинжилгээний бүх файлыг энд оруулна уу (олон файл байж болно)", type=['xlsx', 'csv', 'gz'], accept_multiple_files=True, key='smart_analysis')
 
     tb_files = []
     led_files = []
@@ -835,12 +940,15 @@ elif page.startswith("2"):
                 # Auto-convert ГҮЙЛГЭЭ_БАЛАНС → TB_standardized
                 with st.spinner(f"📗 {d['name']} → TB хөрвүүлж байна..."):
                     d['file'].seek(0)
-                    buf, _ = process_raw_tb(d['file'])
-                    buf.seek(0)
-                    tb_wrap = io.BytesIO(buf.getvalue())
-                    tb_wrap.name = f"TB_standardized_{d['year']}1231.xlsx"
-                    tb_files.append(tb_wrap)
-                st.success(f"✅ {d['name']} → TB хөрвүүлсэн")
+                    buf, tb_check = process_raw_tb(d['file'])
+                    if len(tb_check) > 0:
+                        buf.seek(0)
+                        tb_wrap = io.BytesIO(buf.getvalue())
+                        tb_wrap.name = f"TB_standardized_{d['year']}1231.xlsx"
+                        tb_files.append(tb_wrap)
+                        st.success(f"✅ {d['name']} → TB ({len(tb_check):,} данс)")
+                    else:
+                        st.warning(f"⚠️ {d['name']}: TB формат таарсангүй — 0 данс")
             elif d['type'] == 'edt':
                 # Auto-convert ЕДТ → Ledger + Part1
                 with st.spinner(f"📘 {d['name']} → Ledger + Part1 хөрвүүлж байна..."):
@@ -989,16 +1097,14 @@ elif page.startswith("2"):
         yrs = sorted(tb_st.keys()) if tb_st else []
         bp = res[best]['pred'] if has_account and best else np.array([])
 
-        tab_names = ["📊 Аудитын нэгтгэл", "🔍 Хэвийн бус дансны илрүүлэлт", "⚖️ ХОУ загвар ↔ MUS түүвэрлэлт", "🧠 Тайлбарлагдах хиймэл оюун", "📋 Хэвийн бус дансны жагсаалт"]
-        if has_account:
-            tab_names.append("💰 Материаллагийн тооцоо")
+        tab_names = ["📊 Ерөнхий нэгтгэл", "🔍 Хэвийн бус данс", "⚖️ ХОУ ба уламжлалт арга", "🧠 Тайлбарлагдах ХОУ", "📋 Дэлгэрэнгүй жагсаалт"]
         if has_txn:
-            tab_names.append("🔴 Гүйлгээний түвшний шалгалт")
-            tab_names.append("👤 Харилцагч ба дансны нэгтгэл")
+            tab_names.append("🔴 Гүйлгээний эрсдэлийн шинжилгээ")
+            tab_names.append("👤 Харилцагчаар шинжлэх")
         if has_rm:
-            tab_names.append("🎯 Эрсдэлийн үнэлгээний матриц")
+            tab_names.append("🎯 Эрсдэлийн матриц")
         if has_mo:
-            tab_names.append("📈 Сарын эргэлтийн хандлага")
+            tab_names.append("📈 Сарын өөрчлөлт")
 
         all_tabs = st.tabs(tab_names)
 
@@ -1011,7 +1117,7 @@ elif page.startswith("2"):
                 m1.metric("Данс", f"{len(df):,}")
                 m2.metric("Гүйлгээ", f"{sum(d['rows'] for d in led_st.values()):,}")
                 m3.metric("Аномали", f"{df['ensemble_anomaly'].sum():,} ({df['ensemble_anomaly'].mean()*100:.1f}%)")
-                m4.metric("Шилдэг загвар", f"{best} F1={res[best]['f1']:.4f}")
+                m4.metric("Шилдэг", f"{best} F1={res[best]['f1']:.4f}")
                 if has_rm:
                     mr1, mr2 = st.columns(2)
                     mr1.metric("Эрсдэлийн хос", f"{len(rm_all):,}")
@@ -1062,9 +1168,9 @@ elif page.startswith("2"):
                 fpr, tpr, _ = roc_curve(y, r['prob'])
                 fg2.add_trace(go.Scatter(x=fpr, y=tpr, name=f"{n} (AUC={r['auc']:.4f})"))
             fg2.add_trace(go.Scatter(x=[0, 1], y=[0, 1], name='Random', line=dict(dash='dash', color='gray')))
-            fg2.update_layout(title='ROC муруй — загварын ялгах чадвар', height=400)
+            fg2.update_layout(title='ROC Curve', height=400)
             st.plotly_chart(fg2, use_container_width=True)
-            st.subheader("Илрүүлэлтийн эрсдэлийн харьцуулалт (ISA 200)")
+            st.subheader("Detection Risk")
             dr = []
             for yv in yrs:
                 mk = (df['year'] == yv).values
@@ -1110,256 +1216,11 @@ elif page.startswith("2"):
             st.download_button("📥 CSV", adf.to_csv(index=False).encode('utf-8-sig'), "anomaly.csv", "text/csv")
             td.show_list_interpretation(n_anomalies=len(adf))
 
-        # ── 💰 Материаллагийн тооцоо (ISA 320) ──
-        next_idx = 5
-        if has_account:
-            with all_tabs[next_idx]:
-                st.subheader("💰 Материаллагийн тооцоо (ISA 320)")
-                st.markdown("""
-                <div style="background: linear-gradient(135deg, #fff3e0, #fff8e1); padding:15px; border-radius:10px; border-left:5px solid #e65100; margin-bottom:15px;">
-                    <b>ISA 320 «Аудит гүйцэтгэхэд материаллагийг тодорхойлох»</b> стандартын дагуу
-                    материаллагийн түвшинг тооцоолж, данс бүрийн зөвшөөрөгдөх алдааны дээд хязгаарыг тогтооно.<br>
-                    <span style="font-size:13px; color:#555;">
-                    Материаллаг = Санхүүгийн тайланд нөлөөлөхүйц алдааны босго. Аудиторын мэргэжлийн дүгнэлтэд суурилна.
-                    </span>
-                </div>
-                """, unsafe_allow_html=True)
-
-                # ── Суурь тооцоо ──
-                # Нийт эргэлт, нийт хөрөнгө тооцоолох
-                total_turnover = df['turnover_debit'].abs().sum() + df['turnover_credit'].abs().sum()
-                total_assets = df.loc[df['account_code'].astype(str).str.startswith('1'), 'closing_debit'].abs().sum()
-                total_revenue = df.loc[df['account_code'].astype(str).str[0].isin(['5','6']), 'turnover_credit'].abs().sum()
-                total_equity = df.loc[df['account_code'].astype(str).str.startswith('3'), 'closing_credit'].abs().sum()
-                total_expense = df.loc[df['account_code'].astype(str).str[0].isin(['7','8']), 'turnover_debit'].abs().sum()
-
-                st.markdown("### 📐 Материаллагийн суурь сонгох")
-                st.markdown("""
-                <div style="background:#f5f5f5; padding:10px; border-radius:8px; font-size:13px; margin-bottom:10px;">
-                ISA 320.A3: Материаллагийн суурь нь байгууллагын шинж чанар, хэрэглэгчдийн хэрэгцээнээс хамаарна.<br>
-                • <b>Ашигт байгууллага:</b> Татварын өмнөх ашиг (3–5%)<br>
-                • <b>Орлого суурь:</b> Нийт орлого (0.5–1%)<br>
-                • <b>Хөрөнгө суурь:</b> Нийт хөрөнгө (1–2%)<br>
-                • <b>Зардал суурь:</b> Нийт зардал (1–2%)<br>
-                • <b>Эздийн өмч:</b> Цэвэр хөрөнгө (2–5%)
-                </div>
-                """, unsafe_allow_html=True)
-
-                bases = {}
-                if total_assets > 0: bases['Нийт хөрөнгө (1xx дансууд)'] = total_assets
-                if total_revenue > 0: bases['Нийт орлого (5xx-6xx дансууд)'] = total_revenue
-                if total_expense > 0: bases['Нийт зардал (7xx-8xx дансууд)'] = total_expense
-                if total_equity > 0: bases['Эздийн өмч (3xx дансууд)'] = total_equity
-                if total_turnover > 0: bases['Нийт эргэлт'] = total_turnover
-
-                if not bases:
-                    st.warning("⚠️ Дансны мэдээлэл хангалтгүй байна.")
-                else:
-                    bc1, bc2, bc3 = st.columns(3)
-                    with bc1:
-                        base_name = st.selectbox("📊 Суурь сонгох:", list(bases.keys()), key='mat_base')
-                    with bc2:
-                        base_pct = st.slider("📏 Материаллагийн хувь (%)", 0.5, 5.0, 1.5, 0.1, key='mat_pct',
-                            help="ISA 320-ийн хүрээнд: Хөрөнгө 1-2%, Орлого 0.5-1%, Ашиг 3-5%")
-                    with bc3:
-                        perf_pct = st.slider("⚙️ Гүйцэтгэлийн материаллаг (%-ийн хувь)", 50, 75, 60, 5, key='mat_perf',
-                            help="ISA 320.11: Гүйцэтгэлийн материаллаг = Нийт материаллагийн 50-75%")
-
-                    base_value = bases[base_name]
-                    overall_materiality = base_value * base_pct / 100
-                    performance_materiality = overall_materiality * perf_pct / 100
-                    trivial_threshold = overall_materiality * 0.05  # 5% of overall = clearly trivial
-
-                    # ── Гол тоонууд ──
-                    st.markdown("### 📊 Материаллагийн түвшин")
-                    mc1, mc2, mc3, mc4 = st.columns(4)
-                    mc1.metric("🏢 Суурь дүн", f"₮{base_value:,.0f}")
-                    mc2.metric("📐 Нийт материаллаг", f"₮{overall_materiality:,.0f}", help="ISA 320.10")
-                    mc3.metric("⚙️ Гүйцэтгэлийн материаллаг", f"₮{performance_materiality:,.0f}", help="ISA 320.11")
-                    mc4.metric("🔻 Өчүүхэн алдааны босго", f"₮{trivial_threshold:,.0f}", help="ISA 450.A2: Нийт материаллагийн 5%")
-
-                    st.markdown(f"""
-                    <div style="background:#e8f5e9; padding:12px; border-radius:8px; border-left:4px solid #2e7d32; margin:10px 0;">
-                    <b>Тайлбар:</b> {base_name} = ₮{base_value:,.0f} × {base_pct}% = <b>₮{overall_materiality:,.0f}</b> (Нийт материаллаг)<br>
-                    Гүйцэтгэлийн материаллаг = ₮{overall_materiality:,.0f} × {perf_pct}% = <b>₮{performance_materiality:,.0f}</b><br>
-                    Өчүүхэн алдаа = ₮{overall_materiality:,.0f} × 5% = <b>₮{trivial_threshold:,.0f}</b>
-                    </div>
-                    """, unsafe_allow_html=True)
-
-                    # ── Данс тус бүрийн материаллаг (ISA 320.A12) ──
-                    st.markdown("---")
-                    st.markdown("### 📋 Данс тус бүрийн зөвшөөрөгдөх алдааны дүн (Tolerable Misstatement)")
-                    st.markdown("""
-                    <div style="background:#f5f5f5; padding:10px; border-radius:8px; font-size:13px; margin-bottom:10px;">
-                    ISA 320.A12: Данс тус бүрийн зөвшөөрөгдөх алдааны дүнг тогтоохдоо дансны эргэлтийн хэмжээ,
-                    эрсдэлийн үнэлгээ, хэвийн бус байдлын шалгуурыг харгалзана. Эрсдэлтэй дансны босго бага,
-                    хэвийн дансны босго их байна.
-                    </div>
-                    """, unsafe_allow_html=True)
-
-                    mat_year = st.selectbox("📅 Тайлант жил:", ['Бүгд'] + [str(y) for y in yrs], key='mat_year')
-
-                    acct_df = df.copy()
-                    if mat_year != 'Бүгд':
-                        acct_df = acct_df[acct_df['year'] == int(mat_year)]
-
-                    if len(acct_df) > 0:
-                        # Данс бүрийн эргэлт, хувь, материаллаг
-                        mat_rows = []
-                        for _, row in acct_df.iterrows():
-                            acct_code = str(row.get('account_code', ''))
-                            acct_name = str(row.get('account_name', ''))
-                            td_val = abs(row.get('turnover_debit', 0))
-                            tc_val = abs(row.get('turnover_credit', 0))
-                            cd = abs(row.get('closing_debit', 0))
-                            cc = abs(row.get('closing_credit', 0))
-                            acct_turnover = td_val + tc_val
-                            acct_balance = max(cd, cc)
-
-                            # Дансны эргэлтийн хувь (нийт суурьтай харьцуулсан)
-                            acct_pct = (acct_turnover / base_value * 100) if base_value > 0 else 0
-
-                            # Дансны материаллаг хуваарилалт (эргэлтийн хувиар)
-                            acct_materiality = performance_materiality * (acct_turnover / max(total_turnover, 1))
-                            acct_materiality = max(acct_materiality, trivial_threshold)  # Хамгийн бага = өчүүхэн босго
-
-                            # Эрсдэлийн үнэлгээ
-                            is_anomaly = row.get('ensemble_anomaly', 0) == 1
-                            risk_factor = 0.5 if is_anomaly else 1.0  # Эрсдэлтэй данс → 50% бууруулах
-
-                            adjusted_materiality = acct_materiality * risk_factor
-
-                            # Босго давсан эсэх
-                            exceeds = acct_balance > adjusted_materiality
-
-                            # Ангилал
-                            cat1 = acct_code[0] if len(acct_code) > 0 else '0'
-                            cat_name = {'1':'Хөрөнгө','2':'Өр төлбөр','3':'Эздийн өмч',
-                                       '4':'Зардал','5':'Орлого','6':'Орлого',
-                                       '7':'Зардал','8':'Зардал','9':'Нэгдсэн'}.get(cat1, 'Бусад')
-
-                            mat_rows.append({
-                                'Дансны код': acct_code,
-                                'Дансны нэр': acct_name[:40],
-                                'Ангилал': cat_name,
-                                'Нийт эргэлт': acct_turnover,
-                                'Эцсийн үлдэгдэл': acct_balance,
-                                'Суурь хувь (%)': round(acct_pct, 2),
-                                'Зөвшөөрөгдөх алдаа (₮)': round(adjusted_materiality, 0),
-                                'Эрсдэлийн коэфф': risk_factor,
-                                'Хэвийн бус': '⚠️ Тийм' if is_anomaly else '',
-                                'Босго давсан': '🔴 Тийм' if exceeds else '🟢 Үгүй',
-                            })
-
-                        mat_df = pd.DataFrame(mat_rows)
-
-                        # Тойм тоонууд
-                        n_exceed = (mat_df['Босго давсан'] == '🔴 Тийм').sum()
-                        n_risky = (mat_df['Хэвийн бус'] == '⚠️ Тийм').sum()
-
-                        rc1, rc2, rc3, rc4 = st.columns(4)
-                        rc1.metric("Нийт данс", f"{len(mat_df):,}")
-                        rc2.metric("Босго давсан данс", f"{n_exceed:,}", delta=f"{n_exceed/max(len(mat_df),1)*100:.1f}%", delta_color="inverse")
-                        rc3.metric("Хэвийн бус данс", f"{n_risky:,}")
-                        rc4.metric("Гүйцэтгэлийн материаллаг", f"₮{performance_materiality:,.0f}")
-
-                        # Ангиллаар нэгтгэл
-                        st.markdown("#### 📊 Ангиллаар нэгтгэл")
-                        cat_agg = mat_df.groupby('Ангилал').agg(
-                            Данс=('Дансны код', 'count'),
-                            Нийт_эргэлт=('Нийт эргэлт', 'sum'),
-                            Босго_давсан=('Босго давсан', lambda x: (x == '🔴 Тийм').sum()),
-                            Хэвийн_бус=('Хэвийн бус', lambda x: (x == '⚠️ Тийм').sum()),
-                        ).reset_index()
-                        cat_agg.columns = ['Ангилал', 'Дансны тоо', 'Нийт эргэлт (₮)', 'Босго давсан', 'Хэвийн бус']
-                        cat_agg['Нийт эргэлт (₮)'] = cat_agg['Нийт эргэлт (₮)'].apply(lambda x: f"₮{x:,.0f}")
-                        st.dataframe(cat_agg, use_container_width=True, hide_index=True)
-
-                        # Дансны жагсаалт — босго давсан
-                        st.markdown("#### 🔴 Босго давсан дансууд (нарийвчилсан шалгалт шаардлагатай)")
-                        exceed_df = mat_df[mat_df['Босго давсан'] == '🔴 Тийм'].copy()
-                        if len(exceed_df) > 0:
-                            exceed_df['Нийт эргэлт'] = exceed_df['Нийт эргэлт'].apply(lambda x: f"₮{x:,.0f}")
-                            exceed_df['Эцсийн үлдэгдэл'] = exceed_df['Эцсийн үлдэгдэл'].apply(lambda x: f"₮{x:,.0f}")
-                            exceed_df['Зөвшөөрөгдөх алдаа (₮)'] = exceed_df['Зөвшөөрөгдөх алдаа (₮)'].apply(lambda x: f"₮{x:,.0f}")
-                            st.dataframe(exceed_df, use_container_width=True, hide_index=True, height=400)
-                        else:
-                            st.success("✅ Босго давсан данс алга — бүх данс зөвшөөрөгдөх алдааны хүрээнд байна.")
-
-                        # Бүх дансны жагсаалт
-                        with st.expander("📋 Бүх дансны материаллагийн тооцоо", expanded=False):
-                            full_display = mat_df.copy()
-                            full_display['Нийт эргэлт'] = full_display['Нийт эргэлт'].apply(lambda x: f"₮{x:,.0f}")
-                            full_display['Эцсийн үлдэгдэл'] = full_display['Эцсийн үлдэгдэл'].apply(lambda x: f"₮{x:,.0f}")
-                            full_display['Зөвшөөрөгдөх алдаа (₮)'] = full_display['Зөвшөөрөгдөх алдаа (₮)'].apply(lambda x: f"₮{x:,.0f}")
-                            st.dataframe(full_display, use_container_width=True, hide_index=True, height=600)
-
-                        # Диаграм: Нийт эргэлт vs Зөвшөөрөгдөх алдаа
-                        st.markdown("#### 📈 Дансны эргэлт ба материаллагийн харьцуулалт")
-                        chart_df = mat_df.copy()
-                        chart_df['Зөвшөөрөгдөх алдаа'] = chart_df['Зөвшөөрөгдөх алдаа (₮)']
-                        top30 = chart_df.nlargest(30, 'Нийт эргэлт')
-                        fig_mat = go.Figure()
-                        fig_mat.add_trace(go.Bar(
-                            y=top30['Дансны код'] + ' ' + top30['Дансны нэр'],
-                            x=top30['Эцсийн үлдэгдэл'],
-                            name='Эцсийн үлдэгдэл',
-                            orientation='h',
-                            marker_color='#42a5f5'
-                        ))
-                        fig_mat.add_trace(go.Bar(
-                            y=top30['Дансны код'] + ' ' + top30['Дансны нэр'],
-                            x=top30['Зөвшөөрөгдөх алдаа'],
-                            name='Зөвшөөрөгдөх алдаа (₮)',
-                            orientation='h',
-                            marker_color='#ef5350'
-                        ))
-                        fig_mat.update_layout(
-                            barmode='group', height=max(400, len(top30)*25),
-                            title='Топ 30 данс: Үлдэгдэл ба зөвшөөрөгдөх алдааны харьцуулалт',
-                            yaxis={'categoryorder': 'total ascending'},
-                            xaxis_title='Дүн (₮)',
-                        )
-                        st.plotly_chart(fig_mat, use_container_width=True)
-
-                        # CSV татах
-                        csv_mat = mat_df.copy()
-                        csv_mat['Нийт эргэлт'] = mat_df['Нийт эргэлт']
-                        csv_mat['Эцсийн үлдэгдэл'] = mat_df['Эцсийн үлдэгдэл']
-                        csv_mat['Зөвшөөрөгдөх алдаа (₮)'] = mat_df['Зөвшөөрөгдөх алдаа (₮)']
-                        st.download_button(
-                            "📥 Материаллагийн тооцоо татах (CSV)",
-                            csv_mat.to_csv(index=False).encode('utf-8-sig'),
-                            "materiality_calculation.csv",
-                            "text/csv",
-                            key='dl_mat'
-                        )
-
-                        # ISA тайлбар
-                        with st.expander("📖 ISA 320 стандартын тайлбар", expanded=False):
-                            st.markdown("""
-**ISA 320 — Аудит гүйцэтгэхэд материаллагийг тодорхойлох нь**
-
-| Зүйл | Агуулга |
-|-------|---------|
-| **ISA 320.10** | Аудитор нь аудитын стратеги боловсруулахдаа санхүүгийн тайланд материаллагийн түвшнийг тогтооно |
-| **ISA 320.11** | Гүйцэтгэлийн материаллаг = Нийт материаллагийн 50-75% (залруулагдаагүй, илрээгүй алдааны нөөц) |
-| **ISA 320.A3** | Суурь сонголт: Ашигт байгууллага → татварын өмнөх ашиг; Төрийн → нийт зардал; Хөрөнгө → балансын нийт дүн |
-| **ISA 320.A12** | Данс бүрийн зөвшөөрөгдөх алдаа = эргэлт × хувь × эрсдэлийн коэффициент |
-| **ISA 450.A2** | Өчүүхэн алдаа = Нийт материаллагийн 5% (энэ дүнгээс доош алдааг хуримтлуулах шаардлагагүй) |
-
-**Эрсдэлийн коэффициент:**
-- Хэвийн бус данс (аномали) → **0.5** (зөвшөөрөгдөх алдааг 50% бууруулна)
-- Хэвийн данс → **1.0** (өөрчлөлтгүй)
-
-**Босго давсан = Эцсийн үлдэгдэл > Зөвшөөрөгдөх алдаа** → Нарийвчилсан шалгалт (substantive procedures) шаардлагатай.
-                            """)
-            next_idx += 1
-
         # ── Гүйлгээний түвшний шинжилгээний табууд ──
+        next_idx = 5
         if has_txn:
             with all_tabs[next_idx]:
-                st.subheader("🔴 Гүйлгээний түвшний аудитын шалгалт")
+                st.subheader("🔴 Гүйлгээний түвшний хэвийн бус байдал")
                 st.markdown("""
                 <div style="background:#fce4ec; padding:12px; border-radius:8px; border-left:4px solid #c62828; margin-bottom:15px;">
                 <b>16 шинж чанараар</b> гүйлгээ бүрийг шинжилж хэвийн бус гүйлгээг илрүүлсэн.
@@ -1455,7 +1316,7 @@ elif page.startswith("2"):
             next_idx += 1
 
             with all_tabs[next_idx]:
-                st.subheader("👤 Харилцагч ба дансаар нэгтгэсэн эрсдэл")
+                st.subheader("👤 Харилцагчаар нэгтгэсэн эрсдэл")
                 txn_years2 = sorted(txn_result['report_year'].dropna().unique().tolist()) if 'report_year' in txn_result.columns else []
                 year_f2 = st.selectbox("Он:", ['Бүгд'] + [str(y) for y in txn_years2], key='cp_year_f')
                 txn_filtered = txn_result.copy()
@@ -1476,7 +1337,7 @@ elif page.startswith("2"):
                     st.plotly_chart(px.bar(top20, x='Хэвийн бус', y='Харилцагч', orientation='h', color='Дансны тоо', color_continuous_scale='Reds', title='Топ 20 — хэвийн бус гүйлгээтэй харилцагч').update_layout(height=500, yaxis={'categoryorder':'total ascending'}), use_container_width=True)
                 # Дансаар
                 st.markdown("---")
-                st.subheader("🏷️ Дансаар нэгтгэсэн эрсдэлийн үнэлгээ")
+                st.subheader("🏷️ Дансаар нэгтгэсэн эрсдэл")
                 acct_r = txn_filtered.groupby(['account_code','account_name']).agg(
                     total=('amount','count'), anomaly=('txn_anomaly','sum'), desc_mis=('desc_mismatch','sum'), dir_mis=('dir_mismatch','sum')
                 ).reset_index()
@@ -1491,7 +1352,7 @@ elif page.startswith("2"):
         if has_rm:
             with all_tabs[next_idx]:
                 td.show_risk_matrix_description()
-                st.subheader("🎯 Эрсдэлийн үнэлгээний матриц (ISA 315)")
+                st.subheader("🎯 Эрсдэлийн матриц")
                 rm_all['risk_score'] = pd.to_numeric(rm_all['risk_score'], errors='coerce').fillna(0)
                 rm_all['total_amount_mnt'] = pd.to_numeric(rm_all.get('total_amount_mnt', 0), errors='coerce').fillna(0)
                 rm_summary = []
@@ -1505,7 +1366,7 @@ elif page.startswith("2"):
                     fig_rm.add_trace(go.Bar(x=['Нийт', 'Эрсдэлтэй'], y=[len(rmy), len(rmy[rmy['risk_score'] > 0])], name=str(yv)))
                 fig_rm.update_layout(barmode='group', height=350)
                 st.plotly_chart(fig_rm, use_container_width=True)
-                st.subheader("Топ 20 эрсдэлтэй харилцагч")
+                st.subheader("Топ 20 харилцагч")
                 top_cp = rm_all.groupby('counterparty_name').agg(txn=('transaction_count', 'sum'), accounts=('account_code', 'nunique')).sort_values('txn', ascending=False).head(20).reset_index()
                 top_cp.columns = ['Харилцагч', 'Гүйлгээний тоо', 'Дансны тоо']
                 st.dataframe(top_cp, use_container_width=True, hide_index=True)
@@ -1515,7 +1376,7 @@ elif page.startswith("2"):
         if has_mo:
             with all_tabs[next_idx]:
                 td.show_monthly_trend_description()
-                st.subheader("📈 Сарын эргэлтийн хандлага (ISA 520)")
+                st.subheader("📈 Сарын чиг хандлага")
                 mo_all['total_debit_mnt'] = pd.to_numeric(mo_all['total_debit_mnt'], errors='coerce').fillna(0)
                 mo_all['transaction_count'] = pd.to_numeric(mo_all['transaction_count'], errors='coerce').fillna(0)
                 mo_agg = mo_all.groupby('month').agg(debit=('total_debit_mnt', 'sum'), txn=('transaction_count', 'sum')).reset_index()
@@ -1531,3 +1392,111 @@ elif page.startswith("2"):
 
     if not st.session_state.get('analysis_done', False) and not has_any:
         st.info("👆 Файлуудаа оруулна уу. TB + Ledger = бүрэн шинжилгээ. ЕДТ = гүйлгээний шинжилгээ.")
+
+
+
+# ═══════════════════════════════════════
+# 3️⃣ МАТЕРИАЛЛАГ БАЙДЛЫН ТООЦОО
+# ═══════════════════════════════════════
+elif page.startswith("3"):
+    st.header("3️⃣ Материаллаг байдлын тооцоо")
+    st.markdown("""
+    <div style="background-color:#e3f2fd; padding:15px; border-radius:8px; border-left:4px solid #1565c0; margin-bottom:15px;">
+        <b>📌 Зориулалт:</b> Материаллаг байдлыг данс тус бүрээр хуваарилан тооцоолж,
+        аудитын ач холбогдол өндөр дансуудыг эрэмбэлэн харахад ашиглана.
+        <br><span style="color:#555; font-size:13px;">Стандартчилсан TB, гүйлгээ-баланс, ерөнхий дэвтэр, ledger файлуудыг ашиглаж болно.</span>
+    </div>
+    """, unsafe_allow_html=True)
+
+    mat_files = st.file_uploader(
+        "📎 Материаллаг байдлын тооцоонд ашиглах файлууд",
+        type=['xlsx','csv','gz'],
+        accept_multiple_files=True,
+        key='materiality_files'
+    )
+
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        benchmark_value = st.number_input("Суурь үзүүлэлтийн дүн", min_value=0.0, value=1000000000.0, step=1000000.0, format="%.0f")
+    with c2:
+        planning_pct = st.selectbox("Төлөвлөлтийн материаллаг байдлын хувь", [0.005, 0.01, 0.015, 0.02], index=1, format_func=lambda x: f"{x*100:.1f}%")
+    with c3:
+        performance_factor = st.selectbox("Гүйцэтгэлийн материаллаг байдлын коэффициент", [0.5, 0.6, 0.7, 0.75, 0.8], index=3, format_func=lambda x: f"{x:.2f}")
+
+    trivial_factor = st.slider("Анхаарал хандуулах доод дүнгийн хувь", 0.01, 0.10, 0.05, 0.01,
+                               help="Төлөвлөлтийн материаллаг байдлын хэдэн хувьтай тэнцэх доод босгыг харуулна.")
+
+    if st.button("🧮 Материаллаг байдлын тооцоо хийх", type="primary", use_container_width=True):
+        if not mat_files:
+            st.warning("Файлаа оруулна уу.")
+        else:
+            with st.spinner("Дансны мэдээллийг бэлтгэж байна..."):
+                tb_all, det_df = prepare_tb_summaries_for_materiality(mat_files)
+            if len(det_df) > 0:
+                st.markdown("#### Файл таньсан байдал")
+                st.dataframe(det_df, use_container_width=True, hide_index=True)
+            if tb_all is None or len(tb_all) == 0:
+                st.error("Материаллаг байдлын тооцоонд ашиглах дансны мэдээлэл үүссэнгүй. TB эсвэл ledger бүтэцтэй файл оруулна уу.")
+            else:
+                with st.spinner("Материаллаг байдлын тооцоог хийж байна..."):
+                    mat_df, mat_sum = calculate_materiality_by_account(
+                        tb_all, benchmark_value=benchmark_value,
+                        planning_pct=planning_pct, performance_factor=performance_factor,
+                        trivial_factor=trivial_factor
+                    )
+                if len(mat_df) == 0:
+                    st.error("Материаллаг байдлын хүснэгт үүссэнгүй.")
+                else:
+                    m1, m2, m3, m4 = st.columns(4)
+                    m1.metric("Дансны тоо", f"{mat_sum['дансны_тоо']:,}")
+                    m2.metric("Төлөвлөлтийн материаллаг байдал", f"{mat_sum['төлөвлөлтийн_материаллаг_байдал']:,.0f}")
+                    m3.metric("Гүйцэтгэлийн материаллаг байдал", f"{mat_sum['гүйцэтгэлийн_материаллаг_байдал']:,.0f}")
+                    m4.metric("Анхаарал хандуулах доод дүн", f"{mat_sum['анхаарал_хандуулах_доод_дүн']:,.0f}")
+
+                    year_opts = ['Бүгд'] + [str(y) for y in sorted(pd.Series(mat_df['year']).dropna().astype(str).unique().tolist())]
+                    risk_opts = ['Бүгд', 'Өндөр ач холбогдол', 'Анхаарах', 'Хэвийн']
+                    f1, f2, f3 = st.columns([1,1,2])
+                    with f1:
+                        year_sel = st.selectbox("Жил", year_opts, index=0)
+                    with f2:
+                        risk_sel = st.selectbox("Ач холбогдлын түвшин", risk_opts, index=0)
+                    with f3:
+                        acct_kw = st.text_input("Дансны код эсвэл дансны нэрээр хайх")
+
+                    view = mat_df.copy()
+                    if year_sel != 'Бүгд':
+                        view = view[view['year'].astype(str) == str(year_sel)]
+                    if risk_sel != 'Бүгд':
+                        view = view[view['дансны_эрсдэлийн_түвшин'] == risk_sel]
+                    if acct_kw.strip():
+                        kw = acct_kw.strip().lower()
+                        view = view[
+                            view['account_code'].astype(str).str.lower().str.contains(kw, na=False) |
+                            view['account_name'].astype(str).str.lower().str.contains(kw, na=False)
+                        ]
+
+                    st.markdown("#### Данс тус бүрийн материаллаг байдлын хуваарилалт")
+                    st.dataframe(view, use_container_width=True, hide_index=True)
+
+                    top10 = view.head(10).copy()
+                    if len(top10) > 0:
+                        fig = px.bar(
+                            top10,
+                            x='account_code',
+                            y='төлөвлөлтийн_материаллаг_байдал',
+                            hover_data=['account_name','дансны_үлдэгдэл','дансны_эрсдэлийн_түвшин'],
+                            title='Төлөвлөлтийн материаллаг байдал өндөр 10 данс'
+                        )
+                        st.plotly_chart(fig, use_container_width=True)
+
+                    out = io.BytesIO()
+                    with pd.ExcelWriter(out, engine='openpyxl') as w:
+                        mat_df.to_excel(w, sheet_name='01_Материаллаг_байдал', index=False)
+                        pd.DataFrame([mat_sum]).to_excel(w, sheet_name='02_Нэгтгэл', index=False)
+                    out.seek(0)
+                    st.download_button(
+                        "📥 Материаллаг байдлын Excel татах",
+                        out.getvalue(),
+                        file_name='materiality_by_account.xlsx',
+                        mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+                    )
