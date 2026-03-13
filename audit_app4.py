@@ -1,5 +1,5 @@
 """
-АУДИТЫН ХОУ ПРОТОТИП v3.4
+АУДИТЫН ХОУ ПРОТОТИП v4.0
 TB + Ledger + Part1 → Бүрэн шинжилгээ
 pip install streamlit pandas numpy scikit-learn plotly openpyxl
 streamlit run audit_app.py
