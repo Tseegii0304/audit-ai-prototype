@@ -22,7 +22,7 @@ warnings.filterwarnings('ignore')
 from tab_descriptions import TabDescriptions
 td = TabDescriptions()
 st.set_page_config(page_title="Аудитын ХОУ v4.0", page_icon="🔍", layout="wide")
-st.markdown('<h1 style="text-align:center;color:#1565c0">🔍 Санхүүгийн тайлангын аудитын ХОУ-ын эрсдэл илрүүлэлтийн туршилтын загвар  (прототип) v4.0</h1>', unsafe_allow_html=True)
+st.markdown('<h1 style="text-align:center;color:#1565c0">🔍 СТ-ын аудит vs ХОУ-ын эрсдэл илрүүлэлтийн туршилтын загвар  (прототип) v4.0</h1>', unsafe_allow_html=True)
 st.markdown('<p style="text-align:center;color:#666">TB + Ledger + Part1 → Бүрэн шинжилгээ</p>', unsafe_allow_html=True)
 
 with st.sidebar:
