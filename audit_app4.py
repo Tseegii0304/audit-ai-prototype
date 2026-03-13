@@ -1,5 +1,5 @@
 """
-АУДИТЫН ХОУ ПРОТОТИП v4.0
+АУДИТЫН ХОУ ПРОТОТИП v3.4
 TB + Ledger + Part1 → Бүрэн шинжилгээ
 pip install streamlit pandas numpy scikit-learn plotly openpyxl
 streamlit run audit_app.py
@@ -21,9 +21,9 @@ from collections import Counter
 warnings.filterwarnings('ignore')
 from tab_descriptions import TabDescriptions
 td = TabDescriptions()
-st.set_page_config(page_title="Аудитын ХОУ v4.0", page_icon="🔍", layout="wide")
-st.markdown('<h1 style="text-align:center;color:#1565c0">🔍 СТ-ын аудит vs ХОУ-ын эрсдэл илрүүлэлтийн туршилтын загвар  (прототип) v4.0</h1>', unsafe_allow_html=True)
-st.markdown('<p style="text-align:center;color:#666">Гүйлгээ баланс + Ерөнхий журнал → Бүрэн шинжилгээ</p>', unsafe_allow_html=True)
+st.set_page_config(page_title="Аудитын ХОУ v3.4", page_icon="🔍", layout="wide")
+st.markdown('<h1 style="text-align:center;color:#1565c0">🔍 Аудитын ХОУ Прототип v3.4</h1>', unsafe_allow_html=True)
+st.markdown('<p style="text-align:center;color:#666">TB + Ledger + Part1 → Бүрэн шинжилгээ</p>', unsafe_allow_html=True)
 
 with st.sidebar:
     st.header("📌 Цэс")
@@ -150,7 +150,7 @@ def _find_header_row(all_rows, max_scan=30):
     return best_i, best_s
 
 def process_edt(file_obj, report_year):
-    """Янз бүрийн ЕДТ / ерөнхий журнал форматыг бүх sheet-ээр шалгаж уншина.
+    """Янз бүрийн ЕЖ / ерөнхий журнал форматыг бүх sheet-ээр шалгаж уншина.
     3 parser: standard (Данс:[...]), dual-entry (дебет/кредит данс), rowwise (мөр бүрд данс+дүн)
     """
     import openpyxl
@@ -178,7 +178,7 @@ def process_edt(file_obj, report_year):
                 if cand in h: return i
         return None
 
-    # ═══ Parser 1: Стандарт ЕДТ (Данс: [...]) ═══
+    # ═══ Parser 1: Стандарт ЕЖ (Данс: [...]) ═══
     def _parse_standard_sheet(ws):
         rows_out, cur_code, cur_name = [], None, None
         for row in ws.iter_rows(values_only=True):
@@ -502,7 +502,7 @@ def load_tb(files):
 
 def load_ledger_stats(files, sample_per_year=20000, chunksize=100000):
     """Ledger файлуудыг chunk-ээр уншиж stats + sample DataFrame буцаана.
-    Том ledger дээр Streamlit Cloud OOM болохоос сэргийлнэ.
+    Өндөр хэмжээтэй ledger дээр Streamlit Cloud OOM болохоос сэргийлнэ.
     """
     stats = {}
     sampled_frames = []
@@ -863,7 +863,7 @@ def detect_file_type(f):
 
     # ── Файлын нэрээр хурдан таних ──
     name_check = fname_orig.lower().replace('_', ' ').replace('-', ' ')
-    # ЕДТ / Ерөнхий журнал / Journal
+    # ЕЖ / Ерөнхий журнал / Journal
     edt_keywords = ['ерөнхий журнал', 'ерөнхий дэвтэр', 'едт', 'edt', 'general ledger', 'general journal',
                     'еренхий журнал', 'journal', 'journal entry', 'journal entries']
     for kw in edt_keywords:
@@ -915,13 +915,13 @@ def detect_file_type(f):
                 break
         wb.close()
 
-        # ЕДТ: contains "Данс:" or "Компани:" or "ЕРӨНХИЙ" or "Журнал:" pattern
+        # ЕЖ: contains "Данс:" or "Компани:" or "ЕРӨНХИЙ" or "Журнал:" pattern
         for row in sample_rows:
             if row[0] is not None:
                 s = str(row[0]).strip()
                 if s.startswith('Данс:') or s.startswith('Компани:') or s.startswith('ЕРӨНХИЙ') or s.startswith('Журнал:'):
                     return 'edt', year
-            # ЕДТ: column with "Данс:" might be in other columns too
+            # ЕЖ: column with "Данс:" might be in other columns too
             for cell in row[:5]:
                 if cell is not None and 'Данс:' in str(cell):
                     return 'edt', year
@@ -984,10 +984,10 @@ def build_materiality_by_account(tb_df, overall_materiality, performance_ratio=0
 
 FILE_TYPE_LABELS = {
     'raw_tb': ('📗 ГҮЙЛГЭЭ_БАЛАНС', 'Гүйлгээ-балансын түүхий файл → TB болгон хөрвүүлнэ'),
-    'edt': ('📘 ЕДТ', 'Ерөнхий дэвтрийн тайлан → Ledger + Part1 болгон хөрвүүлнэ'),
+    'edt': ('📘 Ерөнхий журнал (ЕЖ)', 'Ерөнхий журналын гүйлгээ → Гүйлгээ + Нэгтгэл болгон хөрвүүлнэ'),
     'tb_std': ('📊 TB_standardized', 'Стандартчилсан гүйлгээ-баланс → Шинжилгээнд бэлэн'),
-    'ledger': ('📄 Ledger CSV/GZ', 'Ерөнхий дэвтрийн гүйлгээ → Шинжилгээнд бэлэн'),
-    'part1': ('📈 Part1', 'Сарын нэгтгэл + Эрсдэлийн матриц → Шинжилгээнд бэлэн'),
+    'ledger': ('📄 Гүйлгээний файл (CSV/GZ)', 'Гүйлгээний дэлгэрэнгүй файл → Шинжилгээнд бэлэн'),
+    'part1': ('📈 Нэгтгэл файл', 'Сарын нэгтгэл + Эрсдэлийн матриц → Шинжилгээнд бэлэн'),
     'unknown': ('❓ Тодорхойгүй', 'Файлын төрлийг таних боломжгүй'),
 }
 if page.startswith("1"):
@@ -996,7 +996,7 @@ if page.startswith("1"):
     <div style="background-color: #E3F2FD; padding: 15px; border-radius: 8px; border-left: 4px solid #1565C0; margin-bottom: 15px;">
         <b>📂 Ямар ч файлыг оруулаарай!</b> Систем автоматаар таниж, зөв формат руу хөрвүүлнэ.<br>
         <span style="color: #555; font-size: 13px;">
-        Дэмжих файлууд: ГҮЙЛГЭЭ_БАЛАНС (.xlsx), ЕДТ (.xlsx) — хэдэн ч файл, ямар ч дараалал
+        Дэмжих файлууд: ГҮЙЛГЭЭ_БАЛАНС (.xlsx), ЕЖ (.xlsx) — хэдэн ч файл, ямар ч дараалал
         </span>
     </div>
     """, unsafe_allow_html=True)
@@ -1048,7 +1048,7 @@ if page.startswith("1"):
                     for d in edts:
                         edt_by_year.setdefault(d['year'], []).append(d['file'])
                     for yr in sorted(edt_by_year):
-                        with st.spinner(f"📘 ЕДТ {yr} хөрвүүлж байна ({len(edt_by_year[yr])} файл)..."):
+                        with st.spinner(f"📘 Ерөнхий журнал (ЕЖ) {yr} хөрвүүлж байна ({len(edt_by_year[yr])} файл)..."):
                             frames = []
                             for f in edt_by_year[yr]:
                                 f.seek(0)
@@ -1057,9 +1057,9 @@ if page.startswith("1"):
                                     frames.append(df_e)
                             if frames:
                                 st.session_state.led_res[yr] = pd.concat(frames, ignore_index=True)
-                                st.success(f"✅ ЕДТ {yr}: {len(st.session_state.led_res[yr]):,} гүйлгээ")
+                                st.success(f"✅ ЕЖ {yr}: {len(st.session_state.led_res[yr]):,} гүйлгээ")
                             else:
-                                st.warning(f"⚠️ {yr} оны ЕДТ файл(уудаас) гүйлгээ уншигдсангүй. Файлын формат шалгана уу.")
+                                st.warning(f"⚠️ {yr} оны ЕЖ файл(уудаас) гүйлгээ уншигдсангүй. Файлын формат шалгана уу.")
 
     if 'tb_res' in st.session_state and st.session_state.tb_res:
         st.markdown("---\n### 📥 TB файлууд")
@@ -1073,7 +1073,7 @@ if page.startswith("1"):
         for yr in sorted(st.session_state.led_res):
             dfy = st.session_state.led_res[yr]
             if dfy.empty or 'debit_mnt' not in dfy.columns:
-                st.warning(f"⚠️ {yr} оны ЕДТ файлаас гүйлгээ уншигдсангүй. Файлын формат тохирохгүй байж магадгүй.")
+                st.warning(f"⚠️ {yr} оны ЕЖ файлаас гүйлгээ уншигдсангүй. Файлын формат тохирохгүй байж магадгүй.")
                 continue
             dfy['debit_mnt'] = pd.to_numeric(dfy['debit_mnt'], errors='coerce').fillna(0)
             dfy['credit_mnt'] = pd.to_numeric(dfy['credit_mnt'], errors='coerce').fillna(0)
@@ -1081,7 +1081,7 @@ if page.startswith("1"):
                 p1_buf, p1_mo, p1_acct, p1_rm, n_risk = generate_part1(dfy, yr)
                 c1x, c2x, c3x = st.columns(3)
                 c1x.metric("Гүйлгээ", f"{len(dfy):,}")
-                c2x.metric("Эрсдэлийн хос", f"{len(p1_rm):,}")
+                c2x.metric("Дансны бичилтийн тоо", f"{len(p1_rm):,}")
                 c3x.metric("Эрсдэлтэй", f"{n_risk:,}")
                 gz_bytes = gzip.compress(dfy[cols_out].to_csv(index=False).encode('utf-8'))
                 st.download_button(f"📥 ledger_{yr}.csv.gz", gz_bytes, f"prototype_ledger_{yr}.csv.gz", key=f"dled{yr}")
@@ -1096,7 +1096,7 @@ elif page.startswith("2"):
     <div style="background-color: #E8F5E9; padding: 15px; border-radius: 8px; border-left: 4px solid #2E7D32; margin-bottom: 15px;">
         <b>📂 Ямар ч файлаа нэг дор оруулаарай!</b> Систем автоматаар таниж, хөрвүүлж, шинжилгээг ажиллуулна.<br>
         <span style="color: #555; font-size: 13px;">
-        ГҮЙЛГЭЭ_БАЛАНС, ЕДТ, TB, Ledger, Part1 — бүгдийг нь оруулаад болно. Систем өөрөө ялгана.
+        ГҮЙЛГЭЭ_БАЛАНС, ЕЖ, TB, Ledger, Part1 — бүгдийг нь оруулаад болно. Систем өөрөө ялгана.
         </span>
     </div>
     """, unsafe_allow_html=True)
@@ -1127,7 +1127,7 @@ elif page.startswith("2"):
         need_convert = len(raw_tbs) > 0 or len(edts) > 0
 
         if need_convert:
-            st.info(f"🔄 **{len(raw_tbs)} ГҮЙЛГЭЭ_БАЛАНС + {len(edts)} ЕДТ** файл автоматаар хөрвүүлэгдэнэ.")
+            st.info(f"🔄 **{len(raw_tbs)} ГҮЙЛГЭЭ_БАЛАНС + {len(edts)} ЕЖ** файл автоматаар хөрвүүлэгдэнэ.")
 
         for d in detected:
             if d['type'] == 'tb_std':
@@ -1150,12 +1150,12 @@ elif page.startswith("2"):
                     else:
                         st.warning(f"⚠️ {d['name']} — TB мөр уншигдсангүй. Формат шалгана уу.")
             elif d['type'] == 'edt':
-                # Auto-convert ЕДТ → Ledger + Part1
-                with st.spinner(f"📘 {d['name']} → Ledger + Part1 хөрвүүлж байна..."):
+                # Auto-convert ЕЖ → Гүйлгээ + Нэгтгэл
+                with st.spinner(f"📘 {d['name']} → Гүйлгээ + Нэгтгэл хөрвүүлж байна..."):
                     d['file'].seek(0)
                     df_edt, cnt = process_edt(d['file'], d['year'])
                 if cnt == 0 or df_edt.empty:
-                    st.warning(f"⚠️ **{d['name']}** — ЕДТ гэж танигдсан ч гүйлгээ уншигдсангүй. Файлын формат тохирохгүй байж магадгүй.")
+                    st.warning(f"⚠️ **{d['name']}** — ЕЖ гэж танигдсан ч гүйлгээ уншигдсангүй. Файлын формат тохирохгүй байж магадгүй.")
                 else:
                     cols_out = ['report_year','account_code','account_name','transaction_no','transaction_date',
                                 'journal_no','document_no','counterparty_name','counterparty_id',
@@ -1166,7 +1166,7 @@ elif page.startswith("2"):
                     led_wrap = io.BytesIO(csv_bytes)
                     led_wrap.name = f"prototype_ledger_{d['year']}.csv"
                     led_files.append(led_wrap)
-                    # ЕДТ DataFrame-ийг шууд хадгалах (гүйлгээний шинжилгээнд ашиглана)
+                    # ЕЖ DataFrame-ийг шууд хадгалах (гүйлгээний шинжилгээнд ашиглана)
                     if 'edt_frames' not in st.session_state:
                         st.session_state['edt_frames'] = []
                     st.session_state['edt_frames'].append(df_edt)
@@ -1182,7 +1182,7 @@ elif page.startswith("2"):
         elif led_files and not tb_files:
             st.success(f"🎯 Гүйлгээний шинжилгээнд бэлэн: Ledger {len(led_files)} файл (TB нэмбэл дансны шинжилгээ ч ажиллана)")
         elif tb_files and not led_files:
-            st.info("👆 Ledger (.csv/.gz) эсвэл ЕДТ (.xlsx) файл нэмнэ үү")
+            st.info("👆 Ledger (.csv/.gz) эсвэл ЕЖ (.xlsx) файл нэмнэ үү")
         elif not tb_files and not led_files and not need_convert:
             st.info("👆 TB + Ledger файлуудаа оруулна уу")
 
@@ -1231,9 +1231,9 @@ elif page.startswith("2"):
                 with st.spinner("Part1 уншиж байна..."):
                     rm_all, mo_all = load_part1(p1_files)
 
-        # Гүйлгээний түвшний шинжилгээ (Ledger эсвэл ЕДТ байвал)
+        # Гүйлгээний түвшний шинжилгээ (Ledger эсвэл ЕЖ байвал)
         txn_result = pd.DataFrame()
-        # ЕДТ-ээс шууд хадгалсан DataFrame-үүдийг нэгтгэх
+        # ЕЖ-ээс шууд хадгалсан DataFrame-үүдийг нэгтгэх
         edt_frames = st.session_state.get('edt_frames', [])
         all_txn_frames = []
         if len(ledger_full) > 0:
@@ -1314,9 +1314,9 @@ elif page.startswith("2"):
 
         with all_tabs[0]:
             if not has_account:
-                st.info("📊 TB + Ledger файлуудыг оруулахад дансны түвшний шинжилгээ идэвхжинэ. ЕДТ файлаар зөвхөн гүйлгээний шинжилгээ ажиллана.")
+                st.info("📊 TB + Ledger файлуудыг оруулахад дансны түвшний шинжилгээ идэвхжинэ. ЕЖ файлаар зөвхөн гүйлгээний шинжилгээ ажиллана.")
             else:
-                td.show_summary_description(n_accounts=len(df), n_transactions=n_led, n_risk_pairs=len(rm_all) if has_rm else 0)
+                td.show_summary_description(n_accounts=len(df), n_transactions=n_led, n_entries=len(rm_all) if has_rm else 0)
                 m1, m2, m3, m4 = st.columns(4)
                 m1.metric("Данс", f"{len(df):,}")
                 m2.metric("Гүйлгээ", f"{sum(d['rows'] for d in led_st.values()):,}")
@@ -1324,9 +1324,9 @@ elif page.startswith("2"):
                 m4.metric("Шилдэг", f"{best} F1={res[best]['f1']:.4f}")
                 if has_rm:
                     mr1, mr2 = st.columns(2)
-                    mr1.metric("Эрсдэлийн хос", f"{len(rm_all):,}")
-                    mr2.metric("Эрсдэлтэй (score>0)", f"{len(rm_all[rm_all['risk_score']>0]):,}")
-                fg = make_subplots(rows=1, cols=3, subplot_titles=("Данс", "Эргэлт (T₮)", "ЕДТ мөр"))
+                    mr1.metric("Дансны бичилтийн тоо", f"{len(rm_all):,}")
+                    mr2.metric("Эрсдэлтэй гүйлгээ", f"{len(rm_all[rm_all['risk_score']>0]):,}")
+                fg = make_subplots(rows=1, cols=3, subplot_titles=("Данс", "Гүйлгээний нийт дүн (тэрбум ₮)", "Гүйлгээний тоо"))
                 cl3 = ['#2196F3', '#4CAF50', '#FF9800']
                 for i, yv in enumerate(yrs):
                     fg.add_trace(go.Bar(x=[str(yv)], y=[tb_st[yv]['accounts']], marker_color=cl3[i % 3], showlegend=False), row=1, col=1)
@@ -1353,7 +1353,7 @@ elif page.startswith("2"):
                     row_d[str(yv)] = f"{int(cnt)} ({pct:.1f}%)"
                 ad.append(row_d)
             st.dataframe(pd.DataFrame(ad), use_container_width=True, hide_index=True)
-            st.plotly_chart(px.scatter(df, x='log_turn_d', y='log_abs_change', color=df['ensemble_anomaly'].map({0: 'Хэвийн', 1: 'Аномали'}), facet_col='year', opacity=0.5, color_discrete_map={'Хэвийн': '#90caf9', 'Аномали': '#c62828'}, height=400), use_container_width=True)
+            st.plotly_chart(px.scatter(df, x='log_turn_d', y='log_abs_change', labels={'log_abs_change': 'Дансны цэвэр өөрчлөлт (log)'}, color=df['ensemble_anomaly'].map({0: 'Хэвийн', 1: 'Аномали'}), facet_col='year', opacity=0.5, color_discrete_map={'Хэвийн': '#90caf9', 'Аномали': '#c62828'}, height=400), use_container_width=True)
             td.show_anomaly_interpretation(
                 n_if=int(df['iso_anomaly'].sum()),
                 n_zscore=int(df['zscore_anomaly'].sum()),
@@ -1447,7 +1447,7 @@ elif page.startswith("2"):
 | 9 | **Жилийн эцэс** (`is_year_end`) | 12-р сарын гүйлгээ | ISA 240 | IF-д орно |
 | 10 | **Дансны ангилал** (`acct_cat_num`) | Тодорхой ангиллын дансны эрсдэл өөр | ISA 315 | IF-д орно |
 | 11 | **Дебит/кредит чиглэл** (`is_debit`) | Гүйлгээний чиглэл | ISA 240 | IF-д орно |
-| 12 | **Гүйлгээний дүн** (`log_amount`) | Том дүнтэй гүйлгээний эрсдэл | ISA 320 | IF-д орно |
+| 12 | **Гүйлгээний дүн** (`log_amount`) | Өндөр дүнтэй гүйлгээний эрсдэл | ISA 320 | IF-д орно |
 | — | | **Тайлбар ↔ Дансны нэр тулгалт (шинэ):** | | |
 | 13 | **⚠️ Тайлбар ↔ дансны хэв маяг** (`desc_mismatch`) | Тухайн дансны ердийн тайлбараас зөрсөн | ISA 500 | +2 |
 | 14 | **⚠️ Дансны нэр ↔ тайлбар** (`name_no_overlap`) | Дансны нэрийн түлхүүр үг тайлбарт огт байхгүй | ISA 500 | +1 |
@@ -1562,7 +1562,7 @@ elif page.startswith("2"):
                 rm_summary = []
                 for yv in sorted(rm_all['year'].unique()):
                     rmy = rm_all[rm_all['year'] == yv]
-                    rm_summary.append({'Жил': yv, 'Нийт хос': f"{len(rmy):,}", 'Эрсдэлтэй': f"{len(rmy[rmy['risk_score']>0]):,}", 'Хувь': f"{len(rmy[rmy['risk_score']>0])/max(len(rmy),1)*100:.1f}%"})
+                    rm_summary.append({'Жил': yv, 'Нийт бичилт': f"{len(rmy):,}", 'Эрсдэлтэй': f"{len(rmy[rmy['risk_score']>0]):,}", 'Хувь': f"{len(rmy[rmy['risk_score']>0])/max(len(rmy),1)*100:.1f}%"})
                 st.dataframe(pd.DataFrame(rm_summary), use_container_width=True, hide_index=True)
                 fig_rm = go.Figure()
                 for yv in sorted(rm_all['year'].unique()):
@@ -1585,7 +1585,7 @@ elif page.startswith("2"):
                 mo_all['transaction_count'] = pd.to_numeric(mo_all['transaction_count'], errors='coerce').fillna(0)
                 mo_agg = mo_all.groupby('month').agg(debit=('total_debit_mnt', 'sum'), txn=('transaction_count', 'sum')).reset_index()
                 mo_agg['debit_T'] = mo_agg['debit'] / 1e9
-                fig_mo = make_subplots(rows=2, cols=1, subplot_titles=("Эргэлт (T₮)", "Гүйлгээний тоо"))
+                fig_mo = make_subplots(rows=2, cols=1, subplot_titles=("Гүйлгээний нийт дүн (тэрбум ₮)", "Гүйлгээний тоо"))
                 fig_mo.add_trace(go.Scatter(x=mo_agg['month'], y=mo_agg['debit_T'], name='Дебит'), row=1, col=1)
                 fig_mo.add_trace(go.Bar(x=mo_agg['month'], y=mo_agg['txn'], name='Гүйлгээ'), row=2, col=1)
                 fig_mo.update_layout(height=500)
@@ -1595,7 +1595,7 @@ elif page.startswith("2"):
         td.show_dashboard_footer()
 
     if not st.session_state.get('analysis_done', False) and not has_any:
-        st.info("👆 Файлуудаа оруулна уу. TB + Ledger = бүрэн шинжилгээ. ЕДТ = гүйлгээний шинжилгээ.")
+        st.info("👆 Файлуудаа оруулна уу. TB + Ledger = бүрэн шинжилгээ. ЕЖ файлаар гүйлгээний шинжилгээ.")
 
 
 
